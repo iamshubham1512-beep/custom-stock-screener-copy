@@ -1,102 +1,64 @@
 import streamlit as st
-import yfinance as yf
 import pandas as pd
-import numpy as np
-from datetime import datetime
+import yfinance as yf
+import time
 
-# --- PAGE CONFIG ---
-st.set_page_config(page_title="Yearly Top Gainers", layout="wide")
-
-# --- HEADER ---
-st.title("📈 Yearly Top Gainers")
-
-# --- SIDEBAR FILTERS ---
-st.sidebar.header("Filters")
-
-# Year Open Price Range
-price_min = st.sidebar.slider("Year Open Price Range (₹)", min_value=0, max_value=5000, value=(0, 1000), step=50)
-
-# % Change Filter
-change_min, change_max = st.sidebar.slider("% Change Range", min_value=-100, max_value=500, value=(-10, 100), step=5)
-
-# Avg Volume Filter
-volume_filter = st.sidebar.selectbox(
-    "Avg. Volume (more than)",
-    options=["0", "100K", "500K", "1M", "5M", "10M"],
-    index=0
-)
-
-# Convert selected volume option to numeric
-volume_threshold = {
-    "0": 0,
-    "100K": 1e5,
-    "500K": 5e5,
-    "1M": 1e6,
-    "5M": 5e6,
-    "10M": 1e7
-}[volume_filter]
-
-# --- YEAR SELECTION ---
-col1, col2 = st.columns([2, 1])
-with col1:
-    year = st.selectbox("Select Year", [2020, 2021, 2022, 2023, 2024, 2025])
-with col2:
-    st.button("Saved Result")
-
-# --- LOAD SYMBOLS ---
-# You can replace this with your CSV of NSE/BSE stocks
-symbols = ["RELIANCE.NS", "TCS.NS", "INFY.NS", "HDFCBANK.NS", "ICICIBANK.NS", "SBIN.NS", "ITC.NS", "LT.NS"]
-
-# --- DATA FETCH FUNCTION ---
+# --- PHASE 2: LOAD STOCK LIST ---
 @st.cache_data
-def fetch_yearly_data(symbols, year):
-    start = f"{year}-01-01"
-    end = f"{year}-12-31"
+def load_stock_list():
+    try:
+        df = pd.read_csv("NSE Stocks List.csv")
+        symbols = df["Symbol"].dropna().unique().tolist()
+        return symbols
+    except Exception as e:
+        st.error(f"Error loading stock list: {e}")
+        return []
+
+# --- PHASE 3: FETCH STOCK DATA ---
+@st.cache_data(ttl=300)
+def fetch_stock_data(symbols):
     data = []
     for sym in symbols:
         try:
-            df = yf.download(sym, start=start, end=end, progress=False)
-            if not df.empty:
-                open_price = df["Open"].iloc[0]
-                close_price = df["Close"].iloc[-1]
-                pct_change = ((close_price - open_price) / open_price) * 100
-                avg_volume = df["Volume"].mean()
-                data.append([sym.replace(".NS", ""), open_price, close_price, pct_change, avg_volume])
+            ticker = yf.Ticker(sym + ".NS")
+            hist = ticker.history(period="1d")
+            if not hist.empty:
+                last_row = hist.iloc[-1]
+                data.append({
+                    "Symbol": sym,
+                    "Last Price": round(last_row["Close"], 2),
+                    "Open": round(last_row["Open"], 2),
+                    "High": round(last_row["High"], 2),
+                    "Low": round(last_row["Low"], 2),
+                    "Volume": int(last_row["Volume"])
+                })
         except Exception as e:
             print(f"Error fetching {sym}: {e}")
-if data:
-    df = pd.DataFrame(data, columns=["Symbol", "Open Price", "Close Price", "% Change", "Avg. Volume"])
+    return pd.DataFrame(data)
+
+# --- PHASE 4: STREAMLIT UI ---
+st.set_page_config(page_title="Real-Time NSE Screener", layout="wide")
+
+st.title("📈 Real-Time Custom Stock Screener (NSE)")
+st.write("Built by Shubham Kishor — Live Data via Yahoo Finance")
+
+# Load stock list
+symbols = load_stock_list()
+if not symbols:
+    st.warning("⚠️ Upload or ensure the file 'NSE Stocks List.csv' exists in the repo root.")
 else:
-    df = pd.DataFrame(columns=["Symbol", "Open Price", "Close Price", "% Change", "Avg. Volume"])
-return df
+    st.sidebar.header("Filter Settings")
+    selected_symbols = st.sidebar.multiselect("Choose Stocks", symbols[:50], default=symbols[:5])
+    min_price = st.sidebar.number_input("Min Price", 0, 10000, 50)
+    max_price = st.sidebar.number_input("Max Price", 0, 10000, 2000)
 
-# --- FETCH DATA BUTTON ---
-if st.button("🔍 Fetch Data"):
-    with st.spinner("Fetching stock data..."):
-        df = fetch_yearly_data(symbols, year)
+    if st.button("Fetch Live Data"):
+        with st.spinner("Fetching latest prices..."):
+            df = fetch_stock_data(selected_symbols)
+            if not df.empty:
+                filtered = df[(df["Last Price"] >= min_price) & (df["Last Price"] <= max_price)]
+                st.dataframe(filtered, use_container_width=True)
+            else:
+                st.error("No data fetched. Try again in a few seconds.")
 
-        # --- APPLY FILTERS ---
-        filtered_df = df[
-            (df["Open Price"].between(price_min[0], price_min[1])) &
-            (df["% Change"].between(change_min, change_max)) &
-            (df["Avg. Volume"] > volume_threshold)
-        ].reset_index(drop=True)
-
-        # Sort by % Change
-        filtered_df = filtered_df.sort_values(by="% Change", ascending=False).reset_index(drop=True)
-        filtered_df.index += 1  # Add serial number
-
-        st.markdown("### 📊 Number of Results")
-        st.dataframe(filtered_df, use_container_width=True)
-
-        # --- EXPORT CSV ---
-        csv = filtered_df.to_csv(index=False).encode("utf-8")
-        st.download_button(
-            label="⬇️ Export Result as CSV",
-            data=csv,
-            file_name=f"Top_Gainers_{year}.csv",
-            mime="text/csv",
-        )
-
-else:
-    st.info("👆 Select a year, adjust filters, then click **Fetch Data** to view results.")
+st.caption("Data refreshes every 5 minutes. Free API limits may cause delays.")
