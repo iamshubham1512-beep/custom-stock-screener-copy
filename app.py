@@ -67,3 +67,27 @@ if not data.empty:
     )
 
     pct_min = int(data["% Change"].min() // 10 * 10)
+    pct_max = int(data["% Change"].max() // 10 * 10)
+    pct_range = st.slider(
+        "% Change Range",
+        min_value=pct_min,
+        max_value=pct_max,
+        value=(pct_min, pct_max),
+        step=10
+    )
+
+    volume_options = [100_000, 150_000, 200_000, 250_000, 300_000, 350_000, 400_000, 450_000, 500_000]
+    selected_volume = st.selectbox("Avg. Volume", [f"More than {int(v/1000)}K" for v in volume_options])
+    min_volume = int(selected_volume.split()[2].replace("K", "")) * 1000
+
+    # ----- APPLY FILTERS -----
+    filtered_data = data[
+        (data["Open Price"].between(open_range[0], open_range[1])) &
+        (data["% Change"].between(pct_range[0], pct_range[1])) &
+        (data["Avg Volume"] > min_volume)
+    ]
+
+    st.subheader("📈 Filtered Results")
+    st.dataframe(filtered_data.sort_values(by="% Change", ascending=False), use_container_width=True)
+else:
+    st.warning("No data found for the selected year.")
