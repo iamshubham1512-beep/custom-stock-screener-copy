@@ -17,16 +17,18 @@ st.write("Select a year to view top-performing NSE stocks based on yearly price 
 @st.cache_data
 def load_stock_list():
     """
-    Loads the stock symbols from the uploaded CSV file.
-    Expected file name: 'NSE Stocks List.csv' with a column named 'Symbol'.
-    Returns a list of stock symbols.
+    Loads the stock symbols from 'NSE Stocks List.csv' expected in repo root.
+    Required column: 'SYMBOL' (uppercase).
+    Returns a list of symbols (strings).
     """
     try:
         df = pd.read_csv("NSE Stocks List.csv")
         if "SYMBOL" not in df.columns:
-            st.error("❌ The file must contain a column named 'Symbol'.")
+            st.error("❌ The file must contain a column named 'SYMBOL' (all caps).")
             return []
-        return df["SYMBOL"].dropna().unique().tolist()
+        # drop NA and strip whitespace
+        syms = df["SYMBOL"].dropna().astype(str).str.strip().unique().tolist()
+        return syms
     except FileNotFoundError:
         st.error("⚠️ File 'NSE Stocks List.csv' not found in repository root.")
         return []
@@ -45,48 +47,97 @@ year = st.selectbox("Select Year", options=list(range(2019, datetime.now().year 
 # 📈 FETCH YEARLY DATA
 # ======================
 @st.cache_data(ttl=3600)
-def fetch_yearly_data(symbols, year):
+def fetch_yearly_data(symbols, year, show_progress=False):
     """
-    Fetches stock data for each symbol for the selected year using yfinance.
-    Returns a DataFrame with Open Price, Close Price, % Change, and Avg. Volume.
+    Fetches each symbol's OHLCV for the given year using yfinance.
+    Normalizes symbols (adds .NS if missing).
+    Returns:
+      df_final -> DataFrame of positive gainers sorted by % Change (may be empty)
+      stats -> dict with counts and lists for diagnostics
+      df_all -> DataFrame of all symbols with data (for fallback)
     """
     start_date = f"{year}-01-01"
     end_date = f"{year}-12-31"
-    all_data = []
+    collected = []
+    collected_all = []
+    failed = []
+    skipped_empty = []
 
-    for sym in symbols:
+    total = len(symbols)
+    for idx, sym in enumerate(symbols, start=1):
+        # normalize symbol: if user already provided suffix like '.NS', keep it
+        ticker_symbol = sym if "." in sym else f"{sym}.NS"
         try:
-            df = yf.download(f"{sym}.NS", start=start_date, end=end_date, progress=False)
-            if df.empty:
+            df = yf.download(ticker_symbol, start=start_date, end=end_date, progress=False)
+            if df is None or df.empty:
+                skipped_empty.append(sym)
                 continue
 
-            open_price = df["Open"].iloc[0]
-            close_price = df["Close"].iloc[-1]
-            pct_change = round(((close_price - open_price) / open_price) * 100, 2)
-            avg_volume = int(df["Volume"].mean())
+            # get first valid open and last valid close (skip NaNs)
+            # ensure we select first non-null open and last non-null close
+            open_series = df["Open"].dropna()
+            close_series = df["Close"].dropna()
+            vol_series = df["Volume"].dropna()
 
-            # Only include positive gainers
+            if open_series.empty or close_series.empty:
+                skipped_empty.append(sym)
+                continue
+
+            open_price = float(open_series.iloc[0])
+            close_price = float(close_series.iloc[-1])
+
+            # avoid division by zero
+            if open_price == 0:
+                skipped_empty.append(sym)
+                continue
+
+            pct_change = round(((close_price - open_price) / open_price) * 100, 2)
+            avg_volume = int(vol_series.mean()) if not vol_series.empty else 0
+
+            row = {
+                "Symbol": sym,
+                "Open Price": round(open_price, 2),
+                "Close Price": round(close_price, 2),
+                "% Change": pct_change,
+                "Avg. Volume": avg_volume
+            }
+
+            collected_all.append(row)
+
+            # keep only positive gainers for main result
             if pct_change > 0:
-                all_data.append([sym, round(open_price, 2), round(close_price, 2), pct_change, avg_volume])
+                collected.append(row)
 
         except Exception as e:
-            # Handle common ticker or connection errors
-            print(f"Error fetching {sym}: {e}")
+            failed.append({"symbol": sym, "error": str(e)})
             continue
 
-    # Convert collected data into a DataFrame
-    if all_data:
-        df_final = pd.DataFrame(
-            all_data, columns=["Symbol", "Open Price", "Close Price", "% Change", "Avg. Volume"]
-        )
-        df_final.sort_values(by="% Change", ascending=False, inplace=True)
-        df_final.reset_index(drop=True, inplace=True)
-        df_final.index += 1  # Sl. No. starts from 1
+    # Build DataFrames
+    if collected:
+        df_final = pd.DataFrame(collected).sort_values(by="% Change", ascending=False).reset_index(drop=True)
+        df_final.index += 1
         df_final.index.name = "Sl. No."
     else:
+        # empty DF with expected columns
         df_final = pd.DataFrame(columns=["Symbol", "Open Price", "Close Price", "% Change", "Avg. Volume"])
 
-    return df_final
+    if collected_all:
+        df_all = pd.DataFrame(collected_all).sort_values(by="% Change", ascending=False).reset_index(drop=True)
+        df_all.index += 1
+        df_all.index.name = "Sl. No."
+    else:
+        df_all = pd.DataFrame(columns=["Symbol", "Open Price", "Close Price", "% Change", "Avg. Volume"])
+
+    stats = {
+        "requested": total,
+        "fetched_with_data": len(collected_all),
+        "positive_gainers": len(collected),
+        "skipped_empty": len(skipped_empty),
+        "failed": len(failed),
+        "failed_details": failed[:10]  # show up to first 10 for diagnostics
+    }
+
+    return df_final, stats, df_all
 
 # ======================
 # 🔍 FETCH BUTTON
@@ -94,22 +145,54 @@ def fetch_yearly_data(symbols, year):
 if symbols:
     if st.button("🔎 Fetch Yearly Data"):
         with st.spinner(f"Fetching data for {year}... Please wait."):
-            df_result = fetch_yearly_data(symbols, year)
+            df_result, stats, df_all = fetch_yearly_data(symbols, year)
 
+            # If we have positive gainers -> show them
             if not df_result.empty:
-                st.success(f"✅ Data fetched successfully for {len(df_result)} stocks.")
+                st.success(f"✅ Found {stats['positive_gainers']} positive gainers out of {stats['requested']} requested symbols.")
                 st.dataframe(df_result, use_container_width=True)
 
-                # Allow user to download CSV
+                # Download CSV (index contains Sl. No.)
                 csv = df_result.to_csv(index=True).encode("utf-8")
                 st.download_button(
-                    label="⬇️ Download CSV",
+                    label="⬇️ Download CSV (positive gainers)",
                     data=csv,
                     file_name=f"Top_Gainers_{year}.csv",
                     mime="text/csv",
                 )
+
             else:
-                st.warning("⚠️ No positive gainers found for the selected year.")
+                # No positive gainers. Provide helpful feedback and fallback table.
+                st.warning(
+                    "⚠️ No positive gainers found for the selected year."
+                    " Showing diagnostic counts and the top movers (may be negative)."
+                )
+
+                # Show diagnostic stats
+                st.info(
+                    f"Requested: {stats['requested']} • With data: {stats['fetched_with_data']} • "
+                    f"Positive gainers: {stats['positive_gainers']} • Skipped empty: {stats['skipped_empty']} • Failed: {stats['failed']}"
+                )
+
+                if stats["failed_details"]:
+                    st.text("First few fetch errors (symbol & message):")
+                    for item in stats["failed_details"]:
+                        st.write(f"- {item['symbol']}: {item['error']}")
+
+                # If there is data for some symbols, show top movers (even if negative)
+                if not df_all.empty:
+                    st.subheader("Top movers (by % Change) — fallback view")
+                    st.dataframe(df_all.head(20), use_container_width=True)
+
+                    csv_all = df_all.to_csv(index=True).encode("utf-8")
+                    st.download_button(
+                        label="⬇️ Download fallback data (all fetched symbols)",
+                        data=csv_all,
+                        file_name=f"Fetched_Symbols_{year}.csv",
+                        mime="text/csv",
+                    )
+                else:
+                    st.error("No symbol returned any data for the selected year. Check your symbol list formatting (e.g., SYMBOL vs SYMBOL.NS) or the selected year.")
     else:
         st.info("👆 Select a year and click **Fetch Yearly Data** to start.")
 else:
@@ -118,4 +201,4 @@ else:
 # ======================
 # 🧾 FOOTNOTE
 # ======================
-st.caption("Data Source: Yahoo Finance | Built by Shubham Kishor | Updates once per hour via cache.")
+st.caption("Data Source: Yahoo Finance | Built by Shubham Kishor | Results cached for 1 hour.")
