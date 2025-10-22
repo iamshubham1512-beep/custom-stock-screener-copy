@@ -23,10 +23,10 @@ def load_stock_list():
     """
     try:
         df = pd.read_csv("NSE Stocks List.csv")
-        if "Symbol" not in df.columns:
+        if "SYMBOL" not in df.columns:
             st.error("❌ The file must contain a column named 'Symbol'.")
             return []
-        return df["Symbol"].dropna().unique().tolist()
+        return df["SYMBOL"].dropna().unique().tolist()
     except FileNotFoundError:
         st.error("⚠️ File 'NSE Stocks List.csv' not found in repository root.")
         return []
