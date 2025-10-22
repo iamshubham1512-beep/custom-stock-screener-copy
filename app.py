@@ -1,8 +1,9 @@
 import streamlit as st
 import pandas as pd
 import yfinance as yf
-import os
 from datetime import datetime
+import os
+import math
 
 # ======================
 # 🎯 APP CONFIGURATION
@@ -10,90 +11,111 @@ from datetime import datetime
 st.set_page_config(page_title="📈 Yearly Stock Screener", layout="wide")
 
 st.title("📊 Yearly Top Gainers (NSE)")
-st.write("Select a year and apply filters to explore top-performing NSE stocks based on price change and volume.")
+st.write("Select a year to view top-performing NSE stocks based on yearly price change and average volume.")
 
 # ======================
-# 📂 CACHING & DATA FETCHING
+# 📂 LOAD STOCK SYMBOLS
 # ======================
-def fetch_stock_data(symbol, year):
-    try:
-        start_date = f"{year}-01-01"
-        end_date = f"{year}-12-31"
-        data = yf.download(symbol + ".NS", start=start_date, end=end_date, progress=False)
-        if not data.empty:
-            open_price = data.iloc[0]["Open"]
-            close_price = data.iloc[-1]["Close"]
-            pct_change = ((close_price - open_price) / open_price) * 100
-            avg_volume = data["Volume"].mean()
-            return symbol, open_price, close_price, pct_change, avg_volume
-    except Exception:
-        return None
-
 @st.cache_data
-def get_cached_data(year):
-    cache_filename = f"Fetched_Symbols_{year}.csv"
+def load_stock_list():
+    """Load stock symbols from CSV"""
+    try:
+        df = pd.read_csv("NSE Stocks List.csv")
+        if "SYMBOL" not in df.columns:
+            st.error("❌ The file must contain a column named 'SYMBOL' (all caps).")
+            return []
+        syms = df["SYMBOL"].dropna().astype(str).str.strip().unique().tolist()
+        return syms
+    except FileNotFoundError:
+        st.error("⚠️ File 'NSE Stocks List.csv' not found in repository root.")
+        return []
+    except Exception as e:
+        st.error(f"⚠️ Error loading stock list: {e}")
+        return []
 
+symbols = load_stock_list()
+
+# ======================
+# 📅 YEAR SELECTION
+# ======================
+year = st.selectbox("Select Year", options=list(range(2019, datetime.now().year + 1))[::-1])
+
+# ======================
+# ⚡ FETCH DATA FUNCTION
+# ======================
+@st.cache_data(ttl=3600)
+def fetch_yearly_data(symbols, year):
+    """Fetch monthly OHLCV data and calculate yearly change"""
+    start_date = f"{year}-01-01"
+    end_date = f"{year}-12-31"
+    cache_folder = "cache"
+    os.makedirs(cache_folder, exist_ok=True)
+    cache_filename = os.path.join(cache_folder, f"Fetched_Symbols_{year}.csv")
+
+    # 🔁 Check Local Cache
     if os.path.exists(cache_filename):
-        df = pd.read_csv(cache_filename)
-    else:
-        symbols = [
-            "RELIANCE", "TCS", "HDFCBANK", "INFY", "ICICIBANK",
-            "SBIN", "HINDUNILVR", "BAJFINANCE", "ITC", "KOTAKBANK"
-        ]
-        results = []
-        for sym in symbols:
-            result = fetch_stock_data(sym, year)
-            if result:
-                results.append(result)
-        df = pd.DataFrame(results, columns=["Symbol", "Open Price", "Close Price", "% Change", "Avg Volume"])
-        df.to_csv(cache_filename, index=False)
-    return df
+        try:
+            cached_df = pd.read_csv(cache_filename, index_col=0)
+            st.info(f"📦 Loaded cached data from {cache_filename}")
+            df_final = cached_df[cached_df["% Change"] > 0].sort_values(by="% Change", ascending=False)
+            df_final.index = range(1, len(df_final) + 1)
+            return df_final, cached_df
+        except Exception as e:
+            st.warning(f"⚠️ Failed to read cached file: {e}. Fetching fresh data...")
+
+    collected_all = []
+    for sym in symbols:
+        ticker_symbol = sym if "." in sym else f"{sym}.NS"
+        try:
+            df = yf.download(ticker_symbol, start=start_date, end=end_date, interval="1mo", progress=False)
+            if df.empty:
+                continue
+
+            open_series = df["Open"].dropna()
+            close_series = df["Close"].dropna()
+            vol_series = df["Volume"].dropna()
+
+            if open_series.empty or close_series.empty:
+                continue
+
+            open_price = float(open_series.iloc[0])
+            close_price = float(close_series.iloc[-1])
+            if open_price == 0:
+                continue
+
+            pct_change = round(((close_price - open_price) / open_price) * 100, 2)
+            avg_volume = int(vol_series.mean()) if not vol_series.empty else 0
+
+            row = {
+                "SYMBOL": sym,
+                "Open Price": round(open_price, 2),
+                "Close Price": round(close_price, 2),
+                "% Change": pct_change,
+                "Avg. Volume": avg_volume,
+            }
+
+            collected_all.append(row)
+
+        except Exception:
+            continue
+
+    df_all = pd.DataFrame(collected_all).sort_values(by="% Change", ascending=False).reset_index(drop=True)
+    df_all.index += 1
+    df_all.index.name = "Sl. No."
+
+    df_final = df_all[df_all["% Change"] > 0].copy()
+    df_final.index = range(1, len(df_final) + 1)
+
+    # 💾 Save Cached Copy
+    if not df_all.empty:
+        df_all.to_csv(cache_filename, index=True)
+
+    return df_final, df_all
+
 
 # ======================
-# 🧮 MAIN APP LOGIC
+# 🔍 FETCH BUTTON
 # ======================
-year = st.selectbox("Select Year", list(range(2018, datetime.now().year + 1))[::-1])
-data = get_cached_data(year)
-
-if not data.empty:
-    st.subheader("📊 Apply Filters")
-
-    # ----- FILTERS -----
-    open_min = int(data["Open Price"].min() // 10 * 10)
-    open_max = int(data["Open Price"].max() // 10 * 10)
-    open_range = st.slider(
-        "Open Price Range (₹)",
-        min_value=open_min,
-        max_value=open_max,
-        value=(open_min, open_max),
-        step=10
-    )
-
-    pct_min = int(data["% Change"].min() // 10 * 10)
-    pct_max = int(data["% Change"].max() // 10 * 10)
-    pct_range = st.slider(
-        "% Change Range (%)",
-        min_value=pct_min,
-        max_value=pct_max,
-        value=(pct_min, pct_max),
-        step=10
-    )
-
-    volume_options = [100_000, 150_000, 200_000, 250_000, 300_000, 350_000, 400_000, 450_000, 500_000]
-    selected_volume = st.selectbox("Avg. Volume Filter", [f"More than {int(v/1000)}K" for v in volume_options])
-    min_volume = int(selected_volume.split()[2].replace("K", "")) * 1000
-
-    # ----- APPLY FILTERS -----
-    filtered_data = data[
-        (data["Open Price"].between(open_range[0], open_range[1])) &
-        (data["% Change"].between(pct_range[0], pct_range[1])) &
-        (data["Avg Volume"] > min_volume)
-    ]
-
-    st.subheader("📈 Filtered Results")
-    st.dataframe(
-        filtered_data.sort_values(by="% Change", ascending=False),
-        use_container_width=True
-    )
-else:
-    st.warning("⚠️ No data found for the selected year.")
+if symbols:
+    if st.button("🔎 Fetch Yearly Data"):
+        with st.spinner(f"Fetching data for {year
