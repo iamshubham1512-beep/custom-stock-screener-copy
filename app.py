@@ -64,8 +64,11 @@ def fetch_yearly_data(symbols, year):
                 data.append([sym.replace(".NS", ""), open_price, close_price, pct_change, avg_volume])
         except Exception as e:
             print(f"Error fetching {sym}: {e}")
+if data:
     df = pd.DataFrame(data, columns=["Symbol", "Open Price", "Close Price", "% Change", "Avg. Volume"])
-    return df
+else:
+    df = pd.DataFrame(columns=["Symbol", "Open Price", "Close Price", "% Change", "Avg. Volume"])
+return df
 
 # --- FETCH DATA BUTTON ---
 if st.button("🔍 Fetch Data"):
