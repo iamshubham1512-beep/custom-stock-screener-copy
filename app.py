@@ -40,7 +40,7 @@ symbols = load_stock_list()
 year = st.selectbox("Select Year", options=list(range(2019, datetime.now().year + 1))[::-1])
 
 # ======================
-# ⚡ FASTER YEARLY DATA FETCHING (Optimized)
+# ⚡ FETCH DATA FUNCTION
 # ======================
 @st.cache_data(ttl=3600)
 def fetch_yearly_data(symbols, year):
@@ -111,6 +111,7 @@ def fetch_yearly_data(symbols, year):
 
     return df_final, df_all
 
+
 # ======================
 # 🔍 FETCH BUTTON
 # ======================
@@ -120,90 +121,81 @@ if symbols:
             df_result, df_all = fetch_yearly_data(symbols, year)
 
             if not df_result.empty:
+                st.session_state["fetched_data"] = df_result  # ✅ Store in session
+                st.session_state["fetched_year"] = year
                 st.success(f"✅ Found {len(df_result)} positive gainers out of {len(df_all)} fetched symbols.")
-                st.dataframe(df_result, use_container_width=True)
-
-                # ======================
-                # 🎛️ REAL-TIME FILTERS
-                # ======================
-                st.subheader("🔎 Filter Results")
-
-                # Safely calculate slider limits
-                try:
-                    open_min, open_max = int(df_result["Open Price"].min()), int(df_result["Open Price"].max())
-                    pct_min, pct_max = float(df_result["% Change"].min()), float(df_result["% Change"].max())
-                except Exception:
-                    open_min, open_max, pct_min, pct_max = 0, 1000, -100, 100
-
-                # Open Price Range Filter
-                open_range = st.slider(
-                    "Open Price Range (₹)",
-                    min_value=open_min,
-                    max_value=open_max,
-                    value=(open_min, open_max),
-                    step=10,
-                )
-
-                # % Change Range Filter
-                pct_range = st.slider(
-                    "% Change Range",
-                    min_value=pct_min,
-                    max_value=pct_max,
-                    value=(pct_min, pct_max),
-                    step=1.0,
-                )
-
-                # Avg. Volume Filter
-                vol_filter = st.selectbox(
-                    "Filter by Avg. Volume",
-                    options=["All", "More than 100K", "More than 150K", "More than 200K"],
-                )
-
-                # Apply filters dynamically
-                filtered_df = df_result.copy()
-
-                filtered_df = filtered_df[
-                    (filtered_df["Open Price"] >= open_range[0])
-                    & (filtered_df["Open Price"] <= open_range[1])
-                    & (filtered_df["% Change"] >= pct_range[0])
-                    & (filtered_df["% Change"] <= pct_range[1])
-                ]
-
-                if vol_filter != "All":
-                    vol_threshold = int(vol_filter.split(" ")[-1].replace("K", "000"))
-                    filtered_df = filtered_df[filtered_df["Avg. Volume"] > vol_threshold]
-
-                # Display filtered data
-                st.write(f"📊 Showing {len(filtered_df)} results after filters:")
-                st.dataframe(filtered_df, use_container_width=True)
-
-                # Download filtered data
-                csv = filtered_df.to_csv(index=True).encode("utf-8")
-                st.download_button(
-                    label="⬇️ Download Filtered CSV",
-                    data=csv,
-                    file_name=f"Filtered_Gainers_{year}.csv",
-                    mime="text/csv",
-                )
-
             else:
                 st.warning("⚠️ No positive gainers found.")
-                if not df_all.empty:
-                    st.subheader("Top movers (fallback view)")
-                    st.dataframe(df_all.head(20), use_container_width=True)
-                    csv_all = df_all.to_csv(index=True).encode("utf-8")
-                    st.download_button(
-                        label="⬇️ Download fallback data (all symbols)",
-                        data=csv_all,
-                        file_name=f"Fetched_Symbols_{year}.csv",
-                        mime="text/csv",
-                    )
-                else:
-                    st.error("No symbol returned any data. Verify symbol list or year.")
-    else:
-        st.info("👆 Select a year and click **Fetch Yearly Data** to start.")
+                st.session_state["fetched_data"] = None
 else:
     st.stop()
+
+
+# ======================
+# 🎛️ REAL-TIME FILTERS (Persistent)
+# ======================
+if "fetched_data" in st.session_state and st.session_state["fetched_data"] is not None:
+    df_result = st.session_state["fetched_data"]
+    st.subheader(f"📊 Filter Results for {st.session_state['fetched_year']}")
+
+    # Safely calculate slider limits
+    try:
+        open_min, open_max = int(df_result["Open Price"].min()), int(df_result["Open Price"].max())
+        pct_min, pct_max = float(df_result["% Change"].min()), float(df_result["% Change"].max())
+    except Exception:
+        open_min, open_max, pct_min, pct_max = 0, 1000, -100, 100
+
+    # Open Price Range Filter
+    open_range = st.slider(
+        "Open Price Range (₹)",
+        min_value=open_min,
+        max_value=open_max,
+        value=(open_min, open_max),
+        step=10,
+        key="open_slider"
+    )
+
+    # % Change Range Filter
+    pct_range = st.slider(
+        "% Change Range",
+        min_value=pct_min,
+        max_value=pct_max,
+        value=(pct_min, pct_max),
+        step=1.0,
+        key="pct_slider"
+    )
+
+    # Avg. Volume Filter
+    vol_filter = st.selectbox(
+        "Filter by Avg. Volume",
+        options=["All", "More than 100K", "More than 150K", "More than 200K"],
+        key="vol_select"
+    )
+
+    # Apply filters dynamically
+    filtered_df = df_result[
+        (df_result["Open Price"] >= open_range[0])
+        & (df_result["Open Price"] <= open_range[1])
+        & (df_result["% Change"] >= pct_range[0])
+        & (df_result["% Change"] <= pct_range[1])
+    ].copy()
+
+    if vol_filter != "All":
+        vol_threshold = int(vol_filter.split(" ")[-1].replace("K", "000"))
+        filtered_df = filtered_df[filtered_df["Avg. Volume"] > vol_threshold]
+
+    # Display filtered data
+    st.write(f"📈 Showing {len(filtered_df)} results after filters:")
+    st.dataframe(filtered_df, use_container_width=True)
+
+    # Download filtered data
+    csv = filtered_df.to_csv(index=True).encode("utf-8")
+    st.download_button(
+        label="⬇️ Download Filtered CSV",
+        data=csv,
+        file_name=f"Filtered_Gainers_{st.session_state['fetched_year']}.csv",
+        mime="text/csv",
+    )
 
 # ======================
 # 🧾 FOOTNOTE
