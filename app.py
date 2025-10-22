@@ -36,7 +36,10 @@ def get_cached_data(year):
     if os.path.exists(cache_filename):
         df = pd.read_csv(cache_filename)
     else:
-        symbols = ["RELIANCE", "TCS", "HDFCBANK", "INFY", "ICICIBANK", "SBIN", "HINDUNILVR", "BAJFINANCE", "ITC", "KOTAKBANK"]
+        symbols = [
+            "RELIANCE", "TCS", "HDFCBANK", "INFY", "ICICIBANK",
+            "SBIN", "HINDUNILVR", "BAJFINANCE", "ITC", "KOTAKBANK"
+        ]
         results = []
         for sym in symbols:
             result = fetch_stock_data(sym, year)
@@ -59,7 +62,7 @@ if not data.empty:
     open_min = int(data["Open Price"].min() // 10 * 10)
     open_max = int(data["Open Price"].max() // 10 * 10)
     open_range = st.slider(
-        "Open Price Range",
+        "Open Price Range (₹)",
         min_value=open_min,
         max_value=open_max,
         value=(open_min, open_max),
@@ -69,7 +72,7 @@ if not data.empty:
     pct_min = int(data["% Change"].min() // 10 * 10)
     pct_max = int(data["% Change"].max() // 10 * 10)
     pct_range = st.slider(
-        "% Change Range",
+        "% Change Range (%)",
         min_value=pct_min,
         max_value=pct_max,
         value=(pct_min, pct_max),
@@ -77,7 +80,7 @@ if not data.empty:
     )
 
     volume_options = [100_000, 150_000, 200_000, 250_000, 300_000, 350_000, 400_000, 450_000, 500_000]
-    selected_volume = st.selectbox("Avg. Volume", [f"More than {int(v/1000)}K" for v in volume_options])
+    selected_volume = st.selectbox("Avg. Volume Filter", [f"More than {int(v/1000)}K" for v in volume_options])
     min_volume = int(selected_volume.split()[2].replace("K", "")) * 1000
 
     # ----- APPLY FILTERS -----
@@ -88,6 +91,9 @@ if not data.empty:
     ]
 
     st.subheader("📈 Filtered Results")
-    st.dataframe(filtered_data.sort_values(by="% Change", ascending=False), use_container_width=True)
+    st.dataframe(
+        filtered_data.sort_values(by="% Change", ascending=False),
+        use_container_width=True
+    )
 else:
-    st.warning("No data found for the selected year.")
+    st.warning("⚠️ No data found for the selected year.")
