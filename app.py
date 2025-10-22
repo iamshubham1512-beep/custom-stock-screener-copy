@@ -3,7 +3,7 @@ import pandas as pd
 import yfinance as yf
 from datetime import datetime
 import os
-import math
+import numpy as np
 
 # ======================
 # 🎯 APP CONFIGURATION
@@ -118,4 +118,98 @@ def fetch_yearly_data(symbols, year):
 # ======================
 if symbols:
     if st.button("🔎 Fetch Yearly Data"):
-        with st.spinner(f"Fetching data for {year
+        with st.spinner(f"Fetching data for {year}... Please wait (optimized)..."):
+            df_result, df_all = fetch_yearly_data(symbols, year)
+
+            if not df_result.empty:
+                st.session_state["fetched_data"] = df_result  # ✅ Store in session
+                st.session_state["fetched_year"] = year
+                st.success(f"✅ Found {len(df_result)} positive gainers out of {len(df_all)} fetched symbols.")
+            else:
+                st.warning("⚠️ No positive gainers found.")
+                st.session_state["fetched_data"] = None
+else:
+    st.stop()
+
+# ======================
+# 🎛️ REAL-TIME FILTERS (Persistent)
+# ======================
+if "fetched_data" in st.session_state and st.session_state["fetched_data"] is not None:
+    df_result = st.session_state["fetched_data"]
+    st.subheader(f"📊 Filter Results for {st.session_state['fetched_year']}")
+
+    # Safely calculate slider limits
+    try:
+        open_min = int(np.floor(df_result["Open Price"].min() / 10) * 10)
+        open_max = int(np.ceil(df_result["Open Price"].max() / 10) * 10)
+        pct_min = int(np.floor(df_result["% Change"].min() / 10) * 10)
+        pct_max = int(np.ceil(df_result["% Change"].max() / 10) * 10)
+    except Exception:
+        open_min, open_max, pct_min, pct_max = 0, 1000, -100, 100
+
+    # Open Price Range Filter
+    open_range = st.slider(
+        "Open Price Range (₹)",
+        min_value=open_min,
+        max_value=open_max,
+        value=(open_min, open_max),
+        step=10,
+        key="open_slider"
+    )
+
+    # % Change Range Filter
+    pct_range = st.slider(
+        "% Change Range",
+        min_value=pct_min,
+        max_value=pct_max,
+        value=(pct_min, pct_max),
+        step=10,
+        key="pct_slider"
+    )
+
+    # Avg. Volume Filter
+    vol_filter = st.selectbox(
+        "Filter by Avg. Volume",
+        options=[
+            "All",
+            "More than 100K",
+            "More than 150K",
+            "More than 200K",
+            "More than 250K",
+            "More than 300K",
+            "More than 350K",
+            "More than 400K",
+            "More than 500K",
+        ],
+        key="vol_select"
+    )
+
+    # Apply filters dynamically
+    filtered_df = df_result[
+        (df_result["Open Price"] >= open_range[0])
+        & (df_result["Open Price"] <= open_range[1])
+        & (df_result["% Change"] >= pct_range[0])
+        & (df_result["% Change"] <= pct_range[1])
+    ].copy()
+
+    if vol_filter != "All":
+        vol_threshold = int(vol_filter.split(" ")[-1].replace("K", "000"))
+        filtered_df = filtered_df[filtered_df["Avg. Volume"] > vol_threshold]
+
+    # Display filtered data
+    st.write(f"📈 Showing {len(filtered_df)} results after filters:")
+    st.dataframe(filtered_df, use_container_width=True)
+
+    # Download filtered data
+    csv = filtered_df.to_csv(index=True).encode("utf-8")
+    st.download_button(
+        label="⬇️ Download Filtered CSV",
+        data=csv,
+        file_name=f"Filtered_Gainers_{st.session_state['fetched_year']}.csv",
+        mime="text/csv",
+    )
+
+# ======================
+# 🧾 FOOTNOTE
+# ======================
+st.caption("Data Source: Yahoo Finance | Built by Shubham Kishor | Results cached for 1 hour.")
