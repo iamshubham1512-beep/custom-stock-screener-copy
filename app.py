@@ -68,7 +68,7 @@ def fetch_yearly_data(symbols, year, show_progress=False):
         # normalize symbol: if user already provided suffix like '.NS', keep it
         ticker_symbol = sym if "." in sym else f"{sym}.NS"
         try:
-            df = yf.download(ticker_symbol, start=start_date, end=end_date, progress=False)
+            df = yf.download(f"{sym}.NS", start=f"{year}-01-01", end=f"{year}-12-31", interval="1mo", progress=False)
             if df is None or df.empty:
                 skipped_empty.append(sym)
                 continue
