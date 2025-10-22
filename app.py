@@ -1,78 +1,99 @@
 import streamlit as st
 import yfinance as yf
 import pandas as pd
-import pandas_ta as ta
 import numpy as np
+from datetime import datetime
 
-st.set_page_config(page_title="Custom Stock Screener", layout="wide")
-st.title("📈 Custom Stock Screener — Minimal (yfinance)")
+# --- PAGE CONFIG ---
+st.set_page_config(page_title="Yearly Top Gainers", layout="wide")
 
-# Sidebar controls
-with st.sidebar:
-    st.header("Screener settings")
-    tickers_input = st.text_area("Tickers (comma-separated)", "RELIANCE.NS, TCS.NS, HDFCBANK.NS")
-    interval = st.selectbox("Interval", ["5m", "15m", "30m", "1h", "1d"], index=0)
-    period = st.selectbox("Period", ["1d", "5d", "7d", "30d"], index=0)
-    price_min = st.number_input("Price min (₹)", value=0.0, step=1.0)
-    price_max = st.number_input("Price max (₹)", value=100000.0, step=1.0)
-    pct_change_min = st.number_input("Min % Change", value=-100.0, step=0.1)
-    pct_change_max = st.number_input("Max % Change", value=100.0, step=0.1)
-    rsi_threshold = st.slider("RSI threshold (show RSI < value)", 0, 100, 30)
+# --- HEADER ---
+st.title("📈 Yearly Top Gainers")
 
-tickers = [t.strip() for t in tickers_input.split(",") if t.strip()]
-if not tickers:
-    st.warning("Enter at least one ticker.")
-    st.stop()
+# --- SIDEBAR FILTERS ---
+st.sidebar.header("Filters")
 
-@st.cache_data(ttl=60)
-def fetch_multi(tickers, period, interval):
-    try:
-        df = yf.download(tickers, period=period, interval=interval, group_by='ticker', threads=True, progress=False)
-        return df
-    except Exception as e:
-        st.error(f"Error fetching data: {e}")
-        return None
+# Year Open Price Range
+price_min = st.sidebar.slider("Year Open Price Range (₹)", min_value=0, max_value=5000, value=(0, 1000), step=50)
 
-df_all = fetch_multi(tickers, period, interval)
-if df_all is None or df_all.empty:
-    st.info("No data yet — try different interval/period or fewer tickers.")
-    st.stop()
+# % Change Filter
+change_min, change_max = st.sidebar.slider("% Change Range", min_value=-100, max_value=500, value=(-10, 100), step=5)
 
-results = []
-for t in tickers:
-    try:
-        sub = df_all.copy() if len(tickers) == 1 else df_all[t].copy()
-        last = sub.iloc[-1].copy()
-        open_p = float(last['Open'])
-        close_p = float(last['Close'])
-        vol = int(last.get('Volume', 0) or 0)
-        pct = (close_p - open_p) / open_p * 100 if open_p != 0 else 0.0
-        close_series = sub['Close'].dropna()
-        rsi = ta.rsi(close_series, length=14).iloc[-1] if len(close_series) >= 14 else np.nan
-        results.append({
-            "Ticker": t,
-            "Close": round(close_p, 2),
-            "Open": round(open_p, 2),
-            "Volume": vol,
-            "% Change": round(pct, 2),
-            "RSI": round(float(rsi) if not pd.isna(rsi) else np.nan, 2)
-        })
-    except Exception as e:
-        results.append({"Ticker": t, "Close": None, "Open": None, "Volume": None, "% Change": None, "RSI": None})
+# Avg Volume Filter
+volume_filter = st.sidebar.selectbox(
+    "Avg. Volume (more than)",
+    options=["0", "100K", "500K", "1M", "5M", "10M"],
+    index=0
+)
 
-df_results = pd.DataFrame(results).set_index("Ticker")
+# Convert selected volume option to numeric
+volume_threshold = {
+    "0": 0,
+    "100K": 1e5,
+    "500K": 5e5,
+    "1M": 1e6,
+    "5M": 5e6,
+    "10M": 1e7
+}[volume_filter]
 
-filtered = df_results[
-    (df_results["Close"].between(price_min, price_max)) &
-    (df_results["% Change"].between(pct_change_min, pct_change_max)) &
-    (df_results["RSI"].fillna(999) < rsi_threshold)
-]
+# --- YEAR SELECTION ---
+col1, col2 = st.columns([2, 1])
+with col1:
+    year = st.selectbox("Select Year", [2020, 2021, 2022, 2023, 2024, 2025])
+with col2:
+    st.button("Saved Result")
 
-st.subheader("Screener results")
-st.write(f"Interval: {interval} • Period: {period} • Showing {len(filtered)} / {len(df_results)}")
-st.dataframe(filtered)
+# --- LOAD SYMBOLS ---
+# You can replace this with your CSV of NSE/BSE stocks
+symbols = ["RELIANCE.NS", "TCS.NS", "INFY.NS", "HDFCBANK.NS", "ICICIBANK.NS", "SBIN.NS", "ITC.NS", "LT.NS"]
 
-st.subheader("Ticker chart")
-selected = st.selectbox("Select ticker to plot", tickers)
-data_plot = (df_all[selected] if len(tickers) > 1 else df_all).copy()
-st.line_chart(data_plot['Close'])
+# --- DATA FETCH FUNCTION ---
+@st.cache_data
+def fetch_yearly_data(symbols, year):
+    start = f"{year}-01-01"
+    end = f"{year}-12-31"
+    data = []
+    for sym in symbols:
+        try:
+            df = yf.download(sym, start=start, end=end, progress=False)
+            if not df.empty:
+                open_price = df["Open"].iloc[0]
+                close_price = df["Close"].iloc[-1]
+                pct_change = ((close_price - open_price) / open_price) * 100
+                avg_volume = df["Volume"].mean()
+                data.append([sym.replace(".NS", ""), open_price, close_price, pct_change, avg_volume])
+        except Exception as e:
+            print(f"Error fetching {sym}: {e}")
+    df = pd.DataFrame(data, columns=["Symbol", "Open Price", "Close Price", "% Change", "Avg. Volume"])
+    return df
+
+# --- FETCH DATA BUTTON ---
+if st.button("🔍 Fetch Data"):
+    with st.spinner("Fetching stock data..."):
+        df = fetch_yearly_data(symbols, year)
+
+        # --- APPLY FILTERS ---
+        filtered_df = df[
+            (df["Open Price"].between(price_min[0], price_min[1])) &
+            (df["% Change"].between(change_min, change_max)) &
+            (df["Avg. Volume"] > volume_threshold)
+        ].reset_index(drop=True)
+
+        # Sort by % Change
+        filtered_df = filtered_df.sort_values(by="% Change", ascending=False).reset_index(drop=True)
+        filtered_df.index += 1  # Add serial number
+
+        st.markdown("### 📊 Number of Results")
+        st.dataframe(filtered_df, use_container_width=True)
+
+        # --- EXPORT CSV ---
+        csv = filtered_df.to_csv(index=False).encode("utf-8")
+        st.download_button(
+            label="⬇️ Export Result as CSV",
+            data=csv,
+            file_name=f"Top_Gainers_{year}.csv",
+            mime="text/csv",
+        )
+
+else:
+    st.info("👆 Select a year, adjust filters, then click **Fetch Data** to view results.")
