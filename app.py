@@ -8,7 +8,7 @@ import time
 def load_stock_list():
     try:
         df = pd.read_csv("NSE Stocks List.csv")
-        symbols = df["Symbol"].dropna().unique().tolist()
+        symbols = df["SYMBOL"].dropna().unique().tolist()
         return symbols
     except Exception as e:
         st.error(f"Error loading stock list: {e}")
