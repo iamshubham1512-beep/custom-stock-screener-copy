@@ -216,7 +216,6 @@ def filter_by_age(df: pd.DataFrame, year: int, age_option: str) -> pd.DataFrame:
 cc1, cc2 = st.columns([1, 1])
 with cc1:
     if st.button("🧹 Clear Cache"):
-        # Clear all data/resource caches (safe way per docs)
         st.cache_data.clear()
         st.cache_resource.clear()
         st.success("Cleared all caches. App will refresh.")
@@ -246,17 +245,60 @@ if "fetched_data" in st.session_state and st.session_state["fetched_data"] is no
     df_result = st.session_state["fetched_data"]
     st.subheader(f"📊 Filter Results for {st.session_state['fetched_year']}")
 
+    # Bounds for Open and % Change
     try:
-        open_min = int(np.floor(df_result["Open Price"].min() / 10) * 10)
-        open_max = int(np.ceil(df_result["Open Price"].max() / 10) * 10)
+        open_min_bound = int(np.floor(df_result["Open Price"].min() / 10) * 10)
+        open_max_bound = int(np.ceil(df_result["Open Price"].max() / 10) * 10)
         pct_min = int(np.floor(df_result["% Change"].min() / 10) * 10)
         pct_max = int(np.ceil(df_result["% Change"].max() / 10) * 10)
     except Exception:
-        open_min, open_max, pct_min, pct_max = 0, 1000, -100, 100
+        open_min_bound, open_max_bound, pct_min, pct_max = 0, 1000, -100, 100
 
-    open_range = st.slider("Open Price Range (₹)", min_value=open_min, max_value=open_max,
-                           value=(open_min, open_max), step=10, key="open_slider")
+    # ---- New, user-friendly Open Price controls (synced number inputs + slider) ----
+    # Initialize session defaults
+    if "open_min_val" not in st.session_state:
+        st.session_state.open_min_val = open_min_bound
+    if "open_max_val" not in st.session_state:
+        st.session_state.open_max_val = open_max_bound
 
+    st.markdown("#### Open Price Range (₹)")
+    c1, c2 = st.columns([1, 2])
+
+    with c1:
+        n1, n2 = st.columns(2)
+        st.session_state.open_min_val = n1.number_input(
+            "Min", min_value=open_min_bound, max_value=open_max_bound,
+            value=max(open_min_bound, min(st.session_state.open_min_val, st.session_state.open_max_val)),
+            step=1, key="open_min_input"
+        )
+        st.session_state.open_max_val = n2.number_input(
+            "Max", min_value=open_min_bound, max_value=open_max_bound,
+            value=min(open_max_bound, max(st.session_state.open_max_val, st.session_state.open_min_val)),
+            step=1, key="open_max_input"
+        )
+
+    with c2:
+        slider_min, slider_max = st.slider(
+            "Drag to adjust",
+            min_value=open_min_bound, max_value=open_max_bound,
+            value=(
+                max(open_min_bound, min(st.session_state.open_min_val, st.session_state.open_max_val)),
+                min(open_max_bound, max(st.session_state.open_max_val, st.session_state.open_min_val)),
+            ),
+            step=10, key="open_slider_synced"
+        )
+
+    # Two-way sync resolution
+    if (slider_min, slider_max) != (st.session_state.open_min_val, st.session_state.open_max_val):
+        st.session_state.open_min_val, st.session_state.open_max_val = slider_min, slider_max
+    else:
+        st.session_state.open_min_val = max(open_min_bound, min(st.session_state.open_min_val, st.session_state.open_max_val))
+        st.session_state.open_max_val = min(open_max_bound, max(st.session_state.open_max_val, st.session_state.open_min_val))
+
+    open_range = (st.session_state.open_min_val, st.session_state.open_max_val)
+    # ---- End of new Open Price controls ----
+
+    # Keep existing % Change slider as is
     pct_range = st.slider("% Change Range", min_value=pct_min, max_value=pct_max,
                           value=(pct_min, pct_max), step=10, key="pct_slider")
 
