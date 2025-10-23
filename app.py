@@ -161,16 +161,44 @@ def fetch_yearly_data(symbols, year: int):
 # ======================
 # 🧮 AGE MAP (BATCHED, FAST)
 # ======================
+from typing import Dict, List, Tuple
+
+def _normalize_symbol_list(symbols: List[str]) -> Tuple[str, ...]:
+    # Stable, hashable key for caching; upper-case and strip just in case
+    return tuple(sorted(s.strip().upper() for s in symbols))
+
 @st.cache_data(ttl=86400)
-def build_history_start_year(symbols, lookback_years: int = 6):
-    end = pd.Timestamp.utcnow().normalize()
-    start = end - pd.DateOffset(years=lookback_years)
+def build_first_trade_map(
+    symbols: List[str],
+    selected_year: int,
+    max_threshold_years: int = 5,
+    force_refresh: bool = False
+) -> Dict[str, pd.Timestamp]:
+    """
+    Returns a dict: SYMBOL -> first tradable daily bar date (UTC-naive Timestamp).
+    - Uses 1d bars for accuracy (first available open/close).
+    - Cache key is tied to (selected_year, symbols, max_threshold_years) to prevent stale reuse.
+    - Ensures lookback spans enough years to validate 'Older than N years' up to max_threshold_years.
+    """
+    # Cache key components that Streamlit uses (function args)
+    # 'force_refresh' doesn't get used in logic; it only helps bust cache when needed.
+    _ = (selected_year, max_threshold_years, _normalize_symbol_list(symbols), force_refresh)
+
+    if not symbols:
+        return {}
+
+    # Determine a lookback start so we can validate up to N years older than selected_year
+    # Example: selected_year=2022, N=3 -> need data <= 2019-12-31
+    cutoff_year = selected_year - max_threshold_years
+    end = pd.Timestamp(year=selected_year, month=12, day=31)
+    start = pd.Timestamp(year=max(cutoff_year - 1, 1990), month=1, day=1)  # go one extra year to be safe
+
     tickers = [ensure_ns(s) for s in symbols]
 
     hist = yf.download(
         tickers=tickers,
-        start=start.tz_localize(None),
-        end=end.tz_localize(None),
+        start=start,
+        end=end + pd.Timedelta(days=1),  # inclusive end
         interval="1d",
         group_by="ticker",
         auto_adjust=False,
@@ -178,36 +206,80 @@ def build_history_start_year(symbols, lookback_years: int = 6):
         threads=True,
     )
 
-    first_year_map = {}
+    first_trade: Dict[str, pd.Timestamp] = {}
+    # Multi-ticker returns MultiIndex columns [ticker -> fields]
     for sym in symbols:
         t = ensure_ns(sym)
         try:
+            # try direct selection
             if t in getattr(hist.columns, "levels", [hist.columns])[0]:
                 try:
-                    df_t = hist[t].dropna(how="all")
+                    df_t = hist[t]
                 except Exception:
-                    df_t = hist.xs(t, axis=1, level=0, drop_level=False).droplevel(0, axis=1).dropna(how="all")
-                if not df_t.empty:
-                    first_year_map[sym] = int(df_t.index.min().year)
+                    df_t = hist.xs(t, axis=1, level=0, drop_level=False).droplevel(0, axis=1)
+            else:
+                continue
+
+            # Keep only rows that have valid open & close
+            cols = df_t.columns
+            if "Open" not in cols or "Close" not in cols:
+                continue
+            df_t = df_t.loc[df_t["Open"].notna() & df_t["Close"].notna()].copy()
+            if df_t.empty:
+                continue
+
+            # The earliest valid trading date
+            d0 = pd.Timestamp(df_t.index.min().date())
+            first_trade[sym] = d0
         except Exception:
             continue
-    return first_year_map
+
+    return first_trade
 
 def filter_by_age(df: pd.DataFrame, year: int, age_option: str) -> pd.DataFrame:
+    """
+    Robust age filter:
+    - For 'Older than N years' in year Y, requires first_trade_date <= Dec 31 of (Y - N).
+    - Uses daily history based first trade map.
+    - Excludes symbols with first trade inside the selected year when N >= 1.
+    """
     if age_option == "All" or df.empty:
         return df.copy()
-    symbols_unique = df["SYMBOL"].unique().tolist()
-    first_year_map = build_history_start_year(symbols_unique, lookback_years=6)
-    threshold = {"Older than 1 year": 1, "Older than 2 years": 2, "Older than 3 years": 3}[age_option]
+
+    threshold_map = {
+        "Older than 1 year": 1,
+        "Older than 2 years": 2,
+        "Older than 3 years": 3,
+    }
+    if age_option not in threshold_map:
+        return df.copy()
+
+    N = threshold_map[age_option]
+    symbols = df["SYMBOL"].unique().tolist()
+
+    # Build an accurate first-trade map. We pick a max_threshold_years >= N to ensure sufficient lookback.
+    first_trade_map = build_first_trade_map(
+        symbols=symbols,
+        selected_year=year,
+        max_threshold_years=max(5, N + 1),
+        force_refresh=False  # set True to force recompute after big changes
+    )
+
+    # Eligibility cutoff: on or before 31-Dec-(year-N)
+    cutoff = pd.Timestamp(year=year - N, month=12, day=31)
 
     valid = []
-    for sym in symbols_unique:
-        if sym in first_year_map:
-            company_age = year - first_year_map[sym]
-            if company_age >= threshold:
-                valid.append(sym)
-    return df[df["SYMBOL"].isin(valid)].copy()
+    for sym in symbols:
+        d0 = first_trade_map.get(sym)
+        # If we can't determine a date, be conservative: exclude it from "older than" buckets.
+        if d0 is None:
+            continue
+        # Must be listed/tradable on or before cutoff
+        if d0 <= cutoff:
+            valid.append(sym)
 
+    return df[df["SYMBOL"].isin(valid)].copy()
+  
 # ======================
 # 🧹 CACHE CONTROL UI
 # ======================
