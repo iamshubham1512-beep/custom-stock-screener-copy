@@ -13,6 +13,24 @@ st.set_page_config(page_title="📈 Yearly Stock Screener", layout="wide")
 st.title("📊 Yearly Top Gainers (NSE)")
 st.write("Select a year to view top-performing NSE stocks based on yearly price change and average volume.")
 
+# Hide +/- steppers on all number_input widgets
+st.markdown("""
+<style>
+/* Hide number input spin buttons (works across Streamlit's BaseWeb components) */
+button.step-up { display: none !important; }
+button.step-down { display: none !important; }
+/* Optional: also hide browser native spinners for <input type=number> */
+input[type=number]::-webkit-outer-spin-button,
+input[type=number]::-webkit-inner-spin-button {
+  -webkit-appearance: none;
+  margin: 0;
+}
+input[type=number] {
+  -moz-appearance: textfield;
+}
+</style>
+""", unsafe_allow_html=True)  # [web:61]
+
 # ======================
 # 📂 HELPERS
 # ======================
@@ -252,51 +270,38 @@ if "fetched_data" in st.session_state and st.session_state["fetched_data"] is no
         pct_min = int(np.floor(df_result["% Change"].min() / 10) * 10)
         pct_max = int(np.ceil(df_result["% Change"].max() / 10) * 10)
     except Exception:
-        open_min_bound, open_max_bound, pct_min, pct_max = 0, 1000, -100, 100
+        open_min_bound, open_max_bound, pct_min, pct_max = 0, 1000, -100, 100)
 
-    # ---- New, user-friendly Open Price controls (synced number inputs + slider) ----
+    # ---- Updated Open Price inputs (no slider) ----
     # Initialize session defaults
     if "open_min_val" not in st.session_state:
         st.session_state.open_min_val = open_min_bound
     if "open_max_val" not in st.session_state:
         st.session_state.open_max_val = open_max_bound
 
-    st.markdown("#### Open Price Range (₹)")
-    c1, c2 = st.columns([1, 2])
+    # Label with inline values
+    st.markdown(f"#### Open Price Range (₹) — Min ({st.session_state.open_min_val}) · Max ({st.session_state.open_max_val})")
 
-    with c1:
-        n1, n2 = st.columns(2)
-        st.session_state.open_min_val = n1.number_input(
+    cmin, cmax = st.columns(2)
+    with cmin:
+        st.session_state.open_min_val = st.number_input(
             "Min", min_value=open_min_bound, max_value=open_max_bound,
             value=max(open_min_bound, min(st.session_state.open_min_val, st.session_state.open_max_val)),
-            key="open_min_input"
+            step=1, key="open_min_input"
         )
-        st.session_state.open_max_val = n2.number_input(
+    with cmax:
+        st.session_state.open_max_val = st.number_input(
             "Max", min_value=open_min_bound, max_value=open_max_bound,
             value=min(open_max_bound, max(st.session_state.open_max_val, st.session_state.open_min_val)),
-            key="open_max_input"
+            step=1, key="open_max_input"
         )
 
-    with c2:
-        slider_min, slider_max = st.slider(
-            "Drag to adjust",
-            min_value=open_min_bound, max_value=open_max_bound,
-            value=(
-                max(open_min_bound, min(st.session_state.open_min_val, st.session_state.open_max_val)),
-                min(open_max_bound, max(st.session_state.open_max_val, st.session_state.open_min_val)),
-            ),
-            step=10, key="open_slider_synced"
-        )
-
-    # Two-way sync resolution
-    if (slider_min, slider_max) != (st.session_state.open_min_val, st.session_state.open_max_val):
-        st.session_state.open_min_val, st.session_state.open_max_val = slider_min, slider_max
-    else:
-        st.session_state.open_min_val = max(open_min_bound, min(st.session_state.open_min_val, st.session_state.open_max_val))
-        st.session_state.open_max_val = min(open_max_bound, max(st.session_state.open_max_val, st.session_state.open_min_val))
+    # Clamp to maintain order and bounds
+    st.session_state.open_min_val = max(open_min_bound, min(st.session_state.open_min_val, st.session_state.open_max_val))
+    st.session_state.open_max_val = min(open_max_bound, max(st.session_state.open_max_val, st.session_state.open_min_val))
 
     open_range = (st.session_state.open_min_val, st.session_state.open_max_val)
-    # ---- End of new Open Price controls ----
+    # ---- End updated Open Price inputs ----
 
     # Keep existing % Change slider as is
     pct_range = st.slider("% Change Range", min_value=pct_min, max_value=pct_max,
