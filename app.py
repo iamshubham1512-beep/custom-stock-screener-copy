@@ -270,7 +270,7 @@ if "fetched_data" in st.session_state and st.session_state["fetched_data"] is no
         pct_min = int(np.floor(df_result["% Change"].min() / 10) * 10)
         pct_max = int(np.ceil(df_result["% Change"].max() / 10) * 10)
     except Exception:
-        open_min_bound, open_max_bound, pct_min, pct_max = 0, 1000, -100, 100)
+        open_min_bound, open_max_bound, pct_min, pct_max = 0, 1000, -100, 100
 
     # ---- Updated Open Price inputs (no slider) ----
     # Initialize session defaults
