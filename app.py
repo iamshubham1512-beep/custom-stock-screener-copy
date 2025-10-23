@@ -233,6 +233,11 @@ if "fetched_data" in st.session_state and st.session_state["fetched_data"] is no
         with st.spinner(f"Filtering companies {age_filter.lower()}..."):
             filtered_df = filter_by_age(filtered_df, st.session_state["fetched_year"], age_filter)
 
+# Reindex to keep Sl. No. dynamic
+    filtered_df = filtered_df.reset_index(drop=True)
+    filtered_df.index = range(1, len(filtered_df) + 1)
+    filtered_df.index.name = "Sl. No."
+
     st.write(f"📈 Showing {len(filtered_df)} results after filters:")
     st.dataframe(filtered_df, use_container_width=True)
 
