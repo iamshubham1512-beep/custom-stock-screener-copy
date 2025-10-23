@@ -108,51 +108,64 @@ def fetch_yearly_data(symbols, year):
 
 
 # ======================
-# 🧮 COMPANY AGE CHECK (Optimized)
+# 🧮 COMPANY AGE CHECK (Simplified & Reliable)
 # ======================
 @st.cache_data(ttl=86400)
 def build_company_age_cache(symbols, year):
-    """Create or load a cache of first available trading date for each symbol."""
-    cache_folder = "cache"
-    os.makedirs(cache_folder, exist_ok=True)
-    age_cache_file = os.path.join(cache_folder, f"Company_Age_{year}.csv")
-
-    if os.path.exists(age_cache_file):
-        return pd.read_csv(age_cache_file)
-
-    data = []
-    cutoff_reference = datetime(year, 1, 1)
+    """
+    Build a simple cache of company 'listing age' based on Yahoo Finance data availability.
+    Checks if data exists for both start and end of the selected year.
+    """
+    valid_syms = []
+    start_date = f"{year}-01-01"
+    end_date = f"{year}-12-31"
 
     for sym in symbols:
         ticker_symbol = sym if "." in sym else f"{sym}.NS"
         try:
-            hist = yf.download(ticker_symbol, start="2000-01-01", end=cutoff_reference, progress=False)
-            if hist.empty:
-                continue
-            first_trade = hist.index.min().date()
-            data.append({"SYMBOL": sym, "First Trade Date": first_trade})
+            df = yf.download(ticker_symbol, start=start_date, end=end_date, interval="1mo", progress=False)
+            # Simplified age check: company must have data spanning the selected year
+            if not df.empty and df.index.min().year <= year and df.index.max().year >= year:
+                valid_syms.append(sym)
         except Exception:
             continue
 
-    df_age = pd.DataFrame(data)
-    df_age.to_csv(age_cache_file, index=False)
+    df_age = pd.DataFrame(valid_syms, columns=["SYMBOL"])
     return df_age
 
 
 def filter_by_age(df, year, age_option):
-    """Filter companies older than X years based on cached first-trade data."""
-    if age_option == "All":
-        return df
+    """
+    Filters DataFrame by simplified company age logic.
+    - 'Older than 1 year': must have data before the selected year
+    - 'Older than 2/3 years': must have data going back that many years
+    """
+    symbols = df["SYMBOL"].unique().tolist()
+    df_age = build_company_age_cache(symbols, year)
+    valid_syms = []
 
-    age_years = int(age_option.split(" ")[-2])
-    cutoff_date = datetime(year, 1, 1) - timedelta(days=365 * age_years)
+    for sym in df_age["SYMBOL"]:
+        ticker_symbol = sym if "." in sym else f"{sym}.NS"
+        try:
+            info = yf.Ticker(ticker_symbol).history(period="5y")
+            if info.empty:
+                continue
 
-    age_cache = build_company_age_cache(df["SYMBOL"].tolist(), year)
-    age_cache["First Trade Date"] = pd.to_datetime(age_cache["First Trade Date"], errors="coerce")
+            first_year = info.index.min().year
+            company_age = year - first_year
 
-    valid_syms = age_cache[age_cache["First Trade Date"] < cutoff_date]["SYMBOL"].tolist()
+            if age_option == "Older than 1 year" and company_age >= 1:
+                valid_syms.append(sym)
+            elif age_option == "Older than 2 years" and company_age >= 2:
+                valid_syms.append(sym)
+            elif age_option == "Older than 3 years" and company_age >= 3:
+                valid_syms.append(sym)
+            elif age_option == "All":
+                valid_syms.append(sym)
+        except Exception:
+            continue
+
     return df[df["SYMBOL"].isin(valid_syms)].copy()
-
 
 # ======================
 # 🔍 FETCH BUTTON
