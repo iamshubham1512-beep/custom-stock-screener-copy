@@ -1,7 +1,7 @@
 import streamlit as st
 import pandas as pd
 import yfinance as yf
-from datetime import datetime, timedelta
+from datetime import datetime
 import os
 import numpy as np
 
@@ -14,26 +14,49 @@ st.title("📊 Yearly Top Gainers (NSE)")
 st.write("Select a year to view top-performing NSE stocks based on yearly price change and average volume.")
 
 # ======================
+# 📂 HELPERS
+# ======================
+def file_mtime(path: str) -> float:
+    try:
+        return os.path.getmtime(path)
+    except Exception:
+        return 0.0
+
+def ensure_ns(sym: str) -> str:
+    return sym if "." in sym else f"{sym}.NS"
+
+def strip_indices(symbols):
+    # Avoid indices like ^NSEI which behave differently
+    return [s for s in symbols if not str(s).startswith("^")]
+
+# ======================
 # 📂 LOAD STOCK SYMBOLS
 # ======================
 @st.cache_data
-def load_stock_list():
+def load_stock_list(file_path: str, file_mtime_key: float):
     """Load stock symbols from CSV"""
-    try:
-        df = pd.read_csv("NSE Stocks List.csv")
-        if "SYMBOL" not in df.columns:
-            st.error("❌ The file must contain a column named 'SYMBOL' (all caps).")
-            return []
-        syms = df["SYMBOL"].dropna().astype(str).str.strip().unique().tolist()
-        return syms
-    except FileNotFoundError:
-        st.error("⚠️ File 'NSE Stocks List.csv' not found in repository root.")
-        return []
-    except Exception as e:
-        st.error(f"⚠️ Error loading stock list: {e}")
-        return []
+    df = pd.read_csv(file_path)
+    if "SYMBOL" not in df.columns:
+        raise ValueError("The file must contain a column named 'SYMBOL' (all caps).")
+    syms = (
+        df["SYMBOL"]
+        .dropna()
+        .astype(str)
+        .str.strip()
+        .unique()
+        .tolist()
+    )
+    return strip_indices(syms)
 
-symbols = load_stock_list()
+csv_path = "NSE Stocks List.csv"
+try:
+    symbols = load_stock_list(csv_path, file_mtime(csv_path))
+except FileNotFoundError:
+    st.error("⚠️ File 'NSE Stocks List.csv' not found in repository root.")
+    symbols = []
+except Exception as e:
+    st.error(f"⚠️ Error loading stock list: {e}")
+    symbols = []
 
 # ======================
 # 📅 YEAR SELECTION
@@ -41,60 +64,86 @@ symbols = load_stock_list()
 year = st.selectbox("Select Year", options=list(range(2019, datetime.now().year + 1))[::-1])
 
 # ======================
-# ⚡ FETCH YEARLY DATA
+# ⚡ FETCH YEARLY DATA (BATCHED)
 # ======================
 @st.cache_data(ttl=3600)
-def fetch_yearly_data(symbols, year):
-    """Fetch yearly OHLCV data"""
+def fetch_yearly_data(symbols, year: int):
+    """Fetch yearly OHLCV data using a single batched download for speed and reliability."""
     start_date = f"{year}-01-01"
     end_date = f"{year}-12-31"
     cache_folder = "cache"
     os.makedirs(cache_folder, exist_ok=True)
     cache_filename = os.path.join(cache_folder, f"Fetched_Symbols_{year}.csv")
 
+    # Try local CSV cache first
     if os.path.exists(cache_filename):
         try:
             cached_df = pd.read_csv(cache_filename, index_col=0)
-            st.info(f"📦 Loaded cached data from {cache_filename}")
             df_final = cached_df[cached_df["% Change"] > 0].sort_values(by="% Change", ascending=False)
             df_final.index = range(1, len(df_final) + 1)
             return df_final, cached_df
-        except Exception as e:
-            st.warning(f"⚠️ Failed to read cached file: {e}. Fetching fresh data...")
-
-    collected_all = []
-    for sym in symbols:
-        ticker_symbol = sym if "." in sym else f"{sym}.NS"
-        try:
-            df = yf.download(ticker_symbol, start=start_date, end=end_date, interval="1mo", progress=False)
-            if df.empty:
-                continue
-
-            open_series = df["Open"].dropna()
-            close_series = df["Close"].dropna()
-            vol_series = df["Volume"].dropna()
-            if open_series.empty or close_series.empty:
-                continue
-
-            open_price = float(open_series.iloc[0])
-            close_price = float(close_series.iloc[-1])
-            if open_price == 0:
-                continue
-
-            pct_change = round(((close_price - open_price) / open_price) * 100, 2)
-            avg_volume = int(vol_series.mean()) if not vol_series.empty else 0
-
-            collected_all.append({
-                "SYMBOL": sym,
-                "Open Price": round(open_price, 2),
-                "Close Price": round(close_price, 2),
-                "% Change": pct_change,
-                "Avg. Volume": avg_volume,
-            })
         except Exception:
+            pass
+
+    tickers = [ensure_ns(s) for s in symbols]
+    # Multi-ticker monthly download
+    data = yf.download(
+        tickers=tickers,
+        start=start_date,
+        end=end_date,
+        interval="1mo",
+        group_by="ticker",
+        auto_adjust=False,
+        progress=False,
+        threads=True,
+    )
+
+    collected = []
+    # yfinance multi-ticker download yields a MultiIndex on columns: level 0 = ticker
+    for sym in symbols:
+        t = ensure_ns(sym)
+        # Guard for missing ticker columns
+        if t not in getattr(data.columns, "levels", [data.columns])[0]:
             continue
 
-    df_all = pd.DataFrame(collected_all).sort_values(by="% Change", ascending=False).reset_index(drop=True)
+        try:
+            df_t = data[t].dropna(how="all")
+        except Exception:
+            # Some versions require .xs; fallback
+            try:
+                df_t = data.xs(t, axis=1, level=0, drop_level=False).droplevel(0, axis=1).dropna(how="all")
+            except Exception:
+                continue
+
+        # Restrict to calendar year window to avoid off-by-one monthly edges
+        df_year = df_t[(df_t.index >= pd.Timestamp(start_date)) & (df_t.index <= pd.Timestamp(end_date))]
+        if df_year.empty or not set(["Open", "Close"]).issubset(df_year.columns):
+            continue
+
+        open_series = df_year["Open"].dropna()
+        close_series = df_year["Close"].dropna()
+        vol_series = df_year["Volume"].dropna() if "Volume" in df_year else pd.Series(dtype="float64")
+
+        if open_series.empty or close_series.empty:
+            continue
+
+        open_price = float(open_series.iloc[0])
+        close_price = float(close_series.iloc[-1])
+        if open_price == 0:
+            continue
+
+        pct_change = round(((close_price - open_price) / open_price) * 100, 2)
+        avg_volume = int(vol_series.mean()) if not vol_series.empty else 0
+
+        collected.append({
+            "SYMBOL": sym,
+            "Open Price": round(open_price, 2),
+            "Close Price": round(close_price, 2),
+            "% Change": pct_change,
+            "Avg. Volume": avg_volume,
+        })
+
+    df_all = pd.DataFrame(collected).sort_values(by="% Change", ascending=False).reset_index(drop=True)
     df_all.index += 1
     df_all.index.name = "Sl. No."
 
@@ -102,70 +151,75 @@ def fetch_yearly_data(symbols, year):
     df_final.index = range(1, len(df_final) + 1)
 
     if not df_all.empty:
-        df_all.to_csv(cache_filename, index=True)
+        try:
+            df_all.to_csv(cache_filename, index=True)
+        except Exception:
+            pass
 
     return df_final, df_all
 
-
 # ======================
-# 🧮 COMPANY AGE CHECK (Simplified & Reliable)
+# 🧮 AGE MAP (BATCHED, FAST)
 # ======================
 @st.cache_data(ttl=86400)
-def build_company_age_cache(symbols, year):
-    """
-    Build a simple cache of company 'listing age' based on Yahoo Finance data availability.
-    Checks if data exists for both start and end of the selected year.
-    """
-    valid_syms = []
-    start_date = f"{year}-01-01"
-    end_date = f"{year}-12-31"
+def build_history_start_year(symbols, lookback_years: int = 6):
+    """Build a map of symbol -> first available year using one batched daily download."""
+    end = pd.Timestamp.utcnow().normalize()
+    start = end - pd.DateOffset(years=lookback_years)
+    tickers = [ensure_ns(s) for s in symbols]
 
+    hist = yf.download(
+        tickers=tickers,
+        start=start.tz_localize(None),
+        end=end.tz_localize(None),
+        interval="1d",
+        group_by="ticker",
+        auto_adjust=False,
+        progress=False,
+        threads=True,
+    )
+
+    first_year_map = {}
     for sym in symbols:
-        ticker_symbol = sym if "." in sym else f"{sym}.NS"
+        t = ensure_ns(sym)
+        # Check ticker presence in columns
         try:
-            df = yf.download(ticker_symbol, start=start_date, end=end_date, interval="1mo", progress=False)
-            # Simplified age check: company must have data spanning the selected year
-            if not df.empty and df.index.min().year <= year and df.index.max().year >= year:
-                valid_syms.append(sym)
+            if t in getattr(hist.columns, "levels", [hist.columns])[0]:
+                try:
+                    df_t = hist[t].dropna(how="all")
+                except Exception:
+                    df_t = hist.xs(t, axis=1, level=0, drop_level=False).droplevel(0, axis=1).dropna(how="all")
+                if not df_t.empty:
+                    first_year_map[sym] = int(df_t.index.min().year)
         except Exception:
             continue
+    return first_year_map
 
-    df_age = pd.DataFrame(valid_syms, columns=["SYMBOL"])
-    return df_age
+def filter_by_age(df: pd.DataFrame, year: int, age_option: str) -> pd.DataFrame:
+    if age_option == "All" or df.empty:
+        return df.copy()
+    symbols_unique = df["SYMBOL"].unique().tolist()
+    first_year_map = build_history_start_year(symbols_unique, lookback_years=6)
+    threshold = {"Older than 1 year": 1, "Older than 2 years": 2, "Older than 3 years": 3}[age_option]
 
+    valid = []
+    for sym in symbols_unique:
+        if sym in first_year_map:
+            company_age = year - first_year_map[sym]
+            if company_age >= threshold:
+                valid.append(sym)
+    return df[df["SYMBOL"].isin(valid)].copy()
 
-def filter_by_age(df, year, age_option):
-    """
-    Filters DataFrame by simplified company age logic.
-    - 'Older than 1 year': must have data before the selected year
-    - 'Older than 2/3 years': must have data going back that many years
-    """
-    symbols = df["SYMBOL"].unique().tolist()
-    df_age = build_company_age_cache(symbols, year)
-    valid_syms = []
-
-    for sym in df_age["SYMBOL"]:
-        ticker_symbol = sym if "." in sym else f"{sym}.NS"
-        try:
-            info = yf.Ticker(ticker_symbol).history(period="5y")
-            if info.empty:
-                continue
-
-            first_year = info.index.min().year
-            company_age = year - first_year
-
-            if age_option == "Older than 1 year" and company_age >= 1:
-                valid_syms.append(sym)
-            elif age_option == "Older than 2 years" and company_age >= 2:
-                valid_syms.append(sym)
-            elif age_option == "Older than 3 years" and company_age >= 3:
-                valid_syms.append(sym)
-            elif age_option == "All":
-                valid_syms.append(sym)
-        except Exception:
-            continue
-
-    return df[df["SYMBOL"].isin(valid_syms)].copy()
+# ======================
+# 🧹 CACHE CONTROL UI
+# ======================
+cc1, cc2 = st.columns([1, 1])
+with cc1:
+    if st.button("🧹 Clear Cache"):
+        # Clear all data/resource caches (safe way per docs)
+        st.cache_data.clear()
+        st.cache_resource.clear()
+        st.success("Cleared all caches. App will refresh.")
 
 # ======================
 # 🔍 FETCH BUTTON
@@ -184,7 +238,6 @@ if symbols:
                 st.session_state["fetched_data"] = None
 else:
     st.stop()
-
 
 # ======================
 # 🎛️ REAL-TIME FILTERS
@@ -233,7 +286,7 @@ if "fetched_data" in st.session_state and st.session_state["fetched_data"] is no
         with st.spinner(f"Filtering companies {age_filter.lower()}..."):
             filtered_df = filter_by_age(filtered_df, st.session_state["fetched_year"], age_filter)
 
-# Reindex to keep Sl. No. dynamic
+    # Reindex to keep Sl. No. dynamic
     filtered_df = filtered_df.reset_index(drop=True)
     filtered_df.index = range(1, len(filtered_df) + 1)
     filtered_df.index.name = "Sl. No."
