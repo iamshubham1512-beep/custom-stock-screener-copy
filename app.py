@@ -269,12 +269,12 @@ if "fetched_data" in st.session_state and st.session_state["fetched_data"] is no
         st.session_state.open_min_val = n1.number_input(
             "Min", min_value=open_min_bound, max_value=open_max_bound,
             value=max(open_min_bound, min(st.session_state.open_min_val, st.session_state.open_max_val)),
-            step=1, key="open_min_input"
+            key="open_min_input"
         )
         st.session_state.open_max_val = n2.number_input(
             "Max", min_value=open_min_bound, max_value=open_max_bound,
             value=min(open_max_bound, max(st.session_state.open_max_val, st.session_state.open_min_val)),
-            step=1, key="open_max_input"
+            key="open_max_input"
         )
 
     with c2:
