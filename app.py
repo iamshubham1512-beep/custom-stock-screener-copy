@@ -13,13 +13,11 @@ st.set_page_config(page_title="📈 Yearly Stock Screener", layout="wide")
 st.title("📊 Yearly Top Gainers (NSE)")
 st.write("Select a year to view top-performing NSE stocks based on yearly price change and average volume.")
 
-# Hide +/- steppers on all number_input widgets
+# Hide +/- steppers on all number_input widgets (Streamlit lacks a native switch)
 st.markdown("""
 <style>
-/* Hide number input spin buttons (works across Streamlit's BaseWeb components) */
 button.step-up { display: none !important; }
 button.step-down { display: none !important; }
-/* Optional: also hide browser native spinners for <input type=number> */
 input[type=number]::-webkit-outer-spin-button,
 input[type=number]::-webkit-inner-spin-button {
   -webkit-appearance: none;
@@ -29,7 +27,7 @@ input[type=number] {
   -moz-appearance: textfield;
 }
 </style>
-""", unsafe_allow_html=True)  # [web:61]
+""", unsafe_allow_html=True)  # [web:61][web:62]
 
 # ======================
 # 📂 HELPERS
@@ -44,7 +42,6 @@ def ensure_ns(sym: str) -> str:
     return sym if "." in sym else f"{sym}.NS"
 
 def strip_indices(symbols):
-    # Avoid indices like ^NSEI which behave differently
     return [s for s in symbols if not str(s).startswith("^")]
 
 # ======================
@@ -52,17 +49,11 @@ def strip_indices(symbols):
 # ======================
 @st.cache_data
 def load_stock_list(file_path: str, file_mtime_key: float):
-    """Load stock symbols from CSV"""
     df = pd.read_csv(file_path)
     if "SYMBOL" not in df.columns:
         raise ValueError("The file must contain a column named 'SYMBOL' (all caps).")
     syms = (
-        df["SYMBOL"]
-        .dropna()
-        .astype(str)
-        .str.strip()
-        .unique()
-        .tolist()
+        df["SYMBOL"].dropna().astype(str).str.strip().unique().tolist()
     )
     return strip_indices(syms)
 
@@ -86,14 +77,12 @@ year = st.selectbox("Select Year", options=list(range(2019, datetime.now().year 
 # ======================
 @st.cache_data(ttl=3600)
 def fetch_yearly_data(symbols, year: int):
-    """Fetch yearly OHLCV data using a single batched download for speed and reliability."""
     start_date = f"{year}-01-01"
     end_date = f"{year}-12-31"
     cache_folder = "cache"
     os.makedirs(cache_folder, exist_ok=True)
     cache_filename = os.path.join(cache_folder, f"Fetched_Symbols_{year}.csv")
 
-    # Try local CSV cache first
     if os.path.exists(cache_filename):
         try:
             cached_df = pd.read_csv(cache_filename, index_col=0)
@@ -104,7 +93,6 @@ def fetch_yearly_data(symbols, year: int):
             pass
 
     tickers = [ensure_ns(s) for s in symbols]
-    # Multi-ticker monthly download
     data = yf.download(
         tickers=tickers,
         start=start_date,
@@ -117,23 +105,18 @@ def fetch_yearly_data(symbols, year: int):
     )
 
     collected = []
-    # yfinance multi-ticker download yields a MultiIndex on columns: level 0 = ticker
     for sym in symbols:
         t = ensure_ns(sym)
-        # Guard for missing ticker columns
         if t not in getattr(data.columns, "levels", [data.columns])[0]:
             continue
-
         try:
             df_t = data[t].dropna(how="all")
         except Exception:
-            # Some versions require .xs; fallback
             try:
                 df_t = data.xs(t, axis=1, level=0, drop_level=False).droplevel(0, axis=1).dropna(how="all")
             except Exception:
                 continue
 
-        # Restrict to calendar year window to avoid off-by-one monthly edges
         df_year = df_t[(df_t.index >= pd.Timestamp(start_date)) & (df_t.index <= pd.Timestamp(end_date))]
         if df_year.empty or not set(["Open", "Close"]).issubset(df_year.columns):
             continue
@@ -141,7 +124,6 @@ def fetch_yearly_data(symbols, year: int):
         open_series = df_year["Open"].dropna()
         close_series = df_year["Close"].dropna()
         vol_series = df_year["Volume"].dropna() if "Volume" in df_year else pd.Series(dtype="float64")
-
         if open_series.empty or close_series.empty:
             continue
 
@@ -181,7 +163,6 @@ def fetch_yearly_data(symbols, year: int):
 # ======================
 @st.cache_data(ttl=86400)
 def build_history_start_year(symbols, lookback_years: int = 6):
-    """Build a map of symbol -> first available year using one batched daily download."""
     end = pd.Timestamp.utcnow().normalize()
     start = end - pd.DateOffset(years=lookback_years)
     tickers = [ensure_ns(s) for s in symbols]
@@ -200,7 +181,6 @@ def build_history_start_year(symbols, lookback_years: int = 6):
     first_year_map = {}
     for sym in symbols:
         t = ensure_ns(sym)
-        # Check ticker presence in columns
         try:
             if t in getattr(hist.columns, "levels", [hist.columns])[0]:
                 try:
@@ -263,45 +243,51 @@ if "fetched_data" in st.session_state and st.session_state["fetched_data"] is no
     df_result = st.session_state["fetched_data"]
     st.subheader(f"📊 Filter Results for {st.session_state['fetched_year']}")
 
-    # Bounds for Open and % Change
+    # Compute bounds from the first list and pin them as immutable for label
     try:
-        open_min_bound = int(np.floor(df_result["Open Price"].min() / 10) * 10)
-        open_max_bound = int(np.ceil(df_result["Open Price"].max() / 10) * 10)
+        current_min_bound = int(np.floor(df_result["Open Price"].min() / 10) * 10)
+        current_max_bound = int(np.ceil(df_result["Open Price"].max() / 10) * 10)
         pct_min = int(np.floor(df_result["% Change"].min() / 10) * 10)
         pct_max = int(np.ceil(df_result["% Change"].max() / 10) * 10)
     except Exception:
-        open_min_bound, open_max_bound, pct_min, pct_max = 0, 1000, -100, 100
+        current_min_bound, current_max_bound, pct_min, pct_max = 0, 1000, -100, 100
 
-    # ---- Updated Open Price inputs (no slider) ----
-    # Initialize session defaults
-    if "open_min_val" not in st.session_state:
-        st.session_state.open_min_val = open_min_bound
-    if "open_max_val" not in st.session_state:
-        st.session_state.open_max_val = open_max_bound
+    # Initialize immutable display values once per fetched year
+    if "open_min_init" not in st.session_state or st.session_state.get("init_year") != st.session_state["fetched_year"]:
+        st.session_state.open_min_init = current_min_bound
+        st.session_state.open_max_init = current_max_bound
+        st.session_state.init_year = st.session_state["fetched_year"]
 
-    # Label with inline values
-    st.markdown(f"#### Open Price Range (₹) — Min ({st.session_state.open_min_val}) · Max ({st.session_state.open_max_val})")
+    # Initialize editable inputs (used for filtering)
+    if "open_min_val" not in st.session_state or st.session_state.get("inputs_year") != st.session_state["fetched_year"]:
+        st.session_state.open_min_val = current_min_bound
+        st.session_state.open_max_val = current_max_bound
+        st.session_state.inputs_year = st.session_state["fetched_year"]
+
+    # Label shows initial values and does not change with edits
+    st.markdown(
+        f"#### Open Price Range (₹) — Min ({st.session_state.open_min_init}) · Max ({st.session_state.open_max_init})"
+    )
 
     cmin, cmax = st.columns(2)
     with cmin:
         st.session_state.open_min_val = st.number_input(
-            "Min", min_value=open_min_bound, max_value=open_max_bound,
-            value=max(open_min_bound, min(st.session_state.open_min_val, st.session_state.open_max_val)),
+            "Min", min_value=current_min_bound, max_value=current_max_bound,
+            value=max(current_min_bound, min(st.session_state.open_min_val, st.session_state.open_max_val)),
             step=1, key="open_min_input"
         )
     with cmax:
         st.session_state.open_max_val = st.number_input(
-            "Max", min_value=open_min_bound, max_value=open_max_bound,
-            value=min(open_max_bound, max(st.session_state.open_max_val, st.session_state.open_min_val)),
+            "Max", min_value=current_min_bound, max_value=current_max_bound,
+            value=min(current_max_bound, max(st.session_state.open_max_val, st.session_state.open_min_val)),
             step=1, key="open_max_input"
         )
 
     # Clamp to maintain order and bounds
-    st.session_state.open_min_val = max(open_min_bound, min(st.session_state.open_min_val, st.session_state.open_max_val))
-    st.session_state.open_max_val = min(open_max_bound, max(st.session_state.open_max_val, st.session_state.open_min_val))
+    st.session_state.open_min_val = max(current_min_bound, min(st.session_state.open_min_val, st.session_state.open_max_val))
+    st.session_state.open_max_val = min(current_max_bound, max(st.session_state.open_max_val, st.session_state.open_min_val))
 
     open_range = (st.session_state.open_min_val, st.session_state.open_max_val)
-    # ---- End updated Open Price inputs ----
 
     # Keep existing % Change slider as is
     pct_range = st.slider("% Change Range", min_value=pct_min, max_value=pct_max,
