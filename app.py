@@ -27,7 +27,7 @@ input[type=number] {
   -moz-appearance: textfield;
 }
 </style>
-""", unsafe_allow_html=True)  # [web:61][web:62]
+""", unsafe_allow_html=True)
 
 # ======================
 # 📂 HELPERS
@@ -243,56 +243,74 @@ if "fetched_data" in st.session_state and st.session_state["fetched_data"] is no
     df_result = st.session_state["fetched_data"]
     st.subheader(f"📊 Filter Results for {st.session_state['fetched_year']}")
 
-    # Compute bounds from the first list and pin them as immutable for label
+    # Compute bounds from the first list
     try:
-        current_min_bound = int(np.floor(df_result["Open Price"].min() / 10) * 10)
-        current_max_bound = int(np.ceil(df_result["Open Price"].max() / 10) * 10)
-        pct_min = int(np.floor(df_result["% Change"].min() / 10) * 10)
-        pct_max = int(np.ceil(df_result["% Change"].max() / 10) * 10)
+        open_min_bound = int(np.floor(df_result["Open Price"].min() / 10) * 10)
+        open_max_bound = int(np.ceil(df_result["Open Price"].max() / 10) * 10)
+        pct_min_bound = int(np.floor(df_result["% Change"].min() / 10) * 10)
+        pct_max_bound = int(np.ceil(df_result["% Change"].max() / 10) * 10)
     except Exception:
-        current_min_bound, current_max_bound, pct_min, pct_max = 0, 1000, -100, 100
+        open_min_bound, open_max_bound, pct_min_bound, pct_max_bound = 0, 1000, -100, 100
 
-    # Initialize immutable display values once per fetched year
+    # Initialize immutable display values once per fetched year (Open + %)
     if "open_min_init" not in st.session_state or st.session_state.get("init_year") != st.session_state["fetched_year"]:
-        st.session_state.open_min_init = current_min_bound
-        st.session_state.open_max_init = current_max_bound
+        st.session_state.open_min_init = open_min_bound
+        st.session_state.open_max_init = open_max_bound
+        st.session_state.pct_min_init = pct_min_bound
+        st.session_state.pct_max_init = pct_max_bound
         st.session_state.init_year = st.session_state["fetched_year"]
 
-    # Initialize editable inputs (used for filtering)
+    # Initialize editable inputs (used for filtering) for current year
     if "open_min_val" not in st.session_state or st.session_state.get("inputs_year") != st.session_state["fetched_year"]:
-        st.session_state.open_min_val = current_min_bound
-        st.session_state.open_max_val = current_max_bound
+        st.session_state.open_min_val = open_min_bound
+        st.session_state.open_max_val = open_max_bound
+        st.session_state.pct_min_val = pct_min_bound
+        st.session_state.pct_max_val = pct_max_bound
         st.session_state.inputs_year = st.session_state["fetched_year"]
 
-    # Label shows initial values and does not change with edits
+    # ---- Open Price Range (fixed label, editable inputs) ----
     st.markdown(
         f"#### Open Price Range (₹) — Min ({st.session_state.open_min_init}) · Max ({st.session_state.open_max_init})"
     )
-
     cmin, cmax = st.columns(2)
     with cmin:
         st.session_state.open_min_val = st.number_input(
-            "Min", min_value=current_min_bound, max_value=current_max_bound,
-            value=max(current_min_bound, min(st.session_state.open_min_val, st.session_state.open_max_val)),
+            "Min", min_value=open_min_bound, max_value=open_max_bound,
+            value=max(open_min_bound, min(st.session_state.open_min_val, st.session_state.open_max_val)),
             step=1, key="open_min_input"
         )
     with cmax:
         st.session_state.open_max_val = st.number_input(
-            "Max", min_value=current_min_bound, max_value=current_max_bound,
-            value=min(current_max_bound, max(st.session_state.open_max_val, st.session_state.open_min_val)),
+            "Max", min_value=open_min_bound, max_value=open_max_bound,
+            value=min(open_max_bound, max(st.session_state.open_max_val, st.session_state.open_min_val)),
             step=1, key="open_max_input"
         )
-
-    # Clamp to maintain order and bounds
-    st.session_state.open_min_val = max(current_min_bound, min(st.session_state.open_min_val, st.session_state.open_max_val))
-    st.session_state.open_max_val = min(current_max_bound, max(st.session_state.open_max_val, st.session_state.open_min_val))
-
+    st.session_state.open_min_val = max(open_min_bound, min(st.session_state.open_min_val, st.session_state.open_max_val))
+    st.session_state.open_max_val = min(open_max_bound, max(st.session_state.open_max_val, st.session_state.open_min_val))
     open_range = (st.session_state.open_min_val, st.session_state.open_max_val)
 
-    # Keep existing % Change slider as is
-    pct_range = st.slider("% Change Range", min_value=pct_min, max_value=pct_max,
-                          value=(pct_min, pct_max), step=10, key="pct_slider")
+    # ---- % Change Range (fixed label, editable inputs) ----
+    st.markdown(
+        f"#### % Change Range — Min ({st.session_state.pct_min_init}) · Max ({st.session_state.pct_max_init})"
+    )
+    cpmin, cpmax = st.columns(2)
+    with cpmin:
+        st.session_state.pct_min_val = st.number_input(
+            "Min", min_value=pct_min_bound, max_value=pct_max_bound,
+            value=max(pct_min_bound, min(st.session_state.pct_min_val, st.session_state.pct_max_val)),
+            step=1, key="pct_min_input"
+        )
+    with cpmax:
+        st.session_state.pct_max_val = st.number_input(
+            "Max", min_value=pct_min_bound, max_value=pct_max_bound,
+            value=min(pct_max_bound, max(st.session_state.pct_max_val, st.session_state.pct_min_val)),
+            step=1, key="pct_max_input"
+        )
+    st.session_state.pct_min_val = max(pct_min_bound, min(st.session_state.pct_min_val, st.session_state.pct_max_val))
+    st.session_state.pct_max_val = min(pct_max_bound, max(st.session_state.pct_max_val, st.session_state.pct_min_val))
+    pct_range = (st.session_state.pct_min_val, st.session_state.pct_max_val)
 
+    # Other filters
     vol_filter = st.selectbox("Filter by Avg. Volume", options=[
         "All", "More than 100K", "More than 150K", "More than 200K",
         "More than 250K", "More than 300K", "More than 350K",
