@@ -35,14 +35,11 @@ input[type=number] {
 # ======================
 # 📂 HELPERS
 # ======================
-def ensure_ns(sym: str) -> str:
-    return sym
-
-def strip_indices(symbols):
+def strip_indices(symbols: List[str]) -> List[str]:
     return [s for s in symbols if not str(s).startswith("^")]
 
 def _normalize_symbol_list(symbols: List[str]) -> Tuple[str, ...]:
-    return tuple(sorted(s.strip().upper() for s in symbols))
+    return tuple(sorted(str(s).strip().upper() for s in symbols if s is not None))
 
 # ======================
 # 📦 DATA SOURCE: Hugging Face Parquet (download to local cache) + Polars
@@ -95,7 +92,7 @@ def load_master_table_parquet() -> pl.DataFrame:
     local_path = _download_with_cache(HF_PARQUET_URL)
     df = pl.read_parquet(str(local_path))
 
-    # Normalize/standardize column names, including 'stock' -> 'SYMBOL'
+    # 1) Normalize column names (accept 'stock' or 'symbol' as symbol)
     rename_map = {}
     for c in df.columns:
         cl = c.lower()
@@ -117,16 +114,42 @@ def load_master_table_parquet() -> pl.DataFrame:
     if missing:
         raise ValueError(f"Parquet is missing required columns: {missing}")
 
-    # Normalize types
-    df = df.with_columns([
-        pl.col("SYMBOL").cast(pl.Utf8).str.strip().alias("SYMBOL"),
-        pl.when(pl.col("DATE").dtype in (pl.Utf8, pl.Categorical))
-          .then(pl.col("DATE").str.strptime(pl.Datetime, strict=False, utc=False))
-          .otherwise(pl.col("DATE"))
-          .cast(pl.Date)
-          .alias("DATE"),
-        pl.when(pl.col("Volume").is_null()).then(pl.lit(0)).otherwise(pl.col("Volume")).alias("Volume")
-    ])
+    # 2) Make SYMBOL safely Utf8 then strip, without chaining .str on non-strings
+    #    First cast to Utf8 in one pass
+    df = df.with_columns(
+        pl.col("SYMBOL").cast(pl.Utf8).alias("SYMBOL")
+    )
+    #    Then strip in a guarded fashion (if null, keep null; else strip)
+    df = df.with_columns(
+        pl.when(pl.col("SYMBOL").is_not_null())
+          .then(pl.col("SYMBOL").str.strip_chars())
+          .otherwise(pl.lit(None, dtype=pl.Utf8))
+          .alias("SYMBOL")
+    )
+
+    # 3) DATE: coerce various types robustly to Date
+    #    If DATE is Utf8/Categorical -> parse to Datetime then to Date; if already Date/Datetime, cast accordingly
+    date_col = pl.col("DATE")
+    df = df.with_columns(
+        pl.when(date_col.dtype == pl.Utf8)
+          .then(date_col.str.strptime(pl.Datetime, strict=False, utc=False).cast(pl.Date))
+          .when(date_col.dtype == pl.Categorical)
+          .then(date_col.cast(pl.Utf8).str.strptime(pl.Datetime, strict=False, utc=False).cast(pl.Date))
+          .when(date_col.dtype == pl.Datetime)
+          .then(date_col.cast(pl.Date))
+          .otherwise(date_col.cast(pl.Date))
+          .alias("DATE")
+    )
+
+    # 4) Volume: fill nulls with 0; ensure numeric
+    if "Volume" in df.columns:
+        df = df.with_columns(
+            pl.when(pl.col("Volume").is_null()).then(pl.lit(0)).otherwise(pl.col("Volume")).alias("Volume")
+        )
+    else:
+        df = df.with_columns(pl.lit(0).alias("Volume"))
+
+    # 5) Drop empty symbols
     df = df.filter(pl.col("SYMBOL").is_not_null() & (pl.col("SYMBOL") != ""))
 
     return df
@@ -290,7 +313,7 @@ if "fetched_data_pl" in st.session_state and st.session_state["fetched_data_pl"]
     df_result_pl = st.session_state["fetched_data_pl"]
     st.subheader(f"📊 Filter Results for {st.session_state['fetched_year']}")
 
-    # Compute bounds (Polars -> Python)
+    # Compute bounds (Polars -> Python scalars)
     try:
         open_min_bound = int(np.floor(df_result_pl.select(pl.min("Open Price")).item() / 10) * 10)
         open_max_bound = int(np.ceil(df_result_pl.select(pl.max("Open Price")).item() / 10) * 10)
