@@ -3,6 +3,10 @@ import polars as pl
 from datetime import datetime
 import numpy as np
 from typing import Dict, List, Tuple
+import requests
+import hashlib
+import time
+from pathlib import Path
 
 # ======================
 # 🎯 APP CONFIGURATION
@@ -41,13 +45,55 @@ def _normalize_symbol_list(symbols: List[str]) -> Tuple[str, ...]:
     return tuple(sorted(s.strip().upper() for s in symbols))
 
 # ======================
-# 📦 DATA SOURCE: Hugging Face Parquet + Polars
+# 📦 DATA SOURCE: Hugging Face Parquet (download to local cache) + Polars
 # ======================
-HF_PARQUET_URL = "https://huggingface.co/datasets/Chiron-S/NSE_Stocks_Data/resolve/main/All_Stocks_Master.parquet?download=true"
+HF_PARQUET_URL = "https://huggingface.co/datasets/Chiron-S/NSE_Stocks_Data/resolve/main/All_Stocks_Master.parquet"
+CACHE_DIR = Path(".hf_cache")
+CACHE_DIR.mkdir(exist_ok=True)
+
+def _download_with_cache(url: str, cache_dir: Path = CACHE_DIR, max_retries: int = 3, timeout: int = 60) -> Path:
+    digest = hashlib.sha256(url.encode("utf-8")).hexdigest()[:16]
+    data_path = cache_dir / f"{digest}.parquet"
+    etag_path = cache_dir / f"{digest}.etag"
+
+    headers = {}
+    if etag_path.exists():
+        etag = etag_path.read_text().strip()
+        if etag:
+            headers["If-None-Match"] = etag
+
+    session = requests.Session()
+    for attempt in range(1, max_retries + 1):
+        try:
+            resp = session.get(url, headers=headers, stream=True, timeout=timeout)
+            if resp.status_code == 304 and data_path.exists():
+                return data_path
+            resp.raise_for_status()
+            etag = resp.headers.get("ETag")
+            if etag:
+                etag_path.write_text(etag)
+            tmp_path = data_path.with_suffix(".tmp")
+            with open(tmp_path, "wb") as f:
+                for chunk in resp.iter_content(chunk_size=1024 * 1024):
+                    if chunk:
+                        f.write(chunk)
+            tmp_path.replace(data_path)
+            return data_path
+        except Exception:
+            if attempt == max_retries:
+                if data_path.exists():
+                    return data_path
+                raise
+            time.sleep(1.5 * attempt)
+
+    if data_path.exists():
+        return data_path
+    raise OSError("Failed to download Parquet after retries.")
 
 @st.cache_data(ttl=3600)
 def load_master_table_parquet() -> pl.DataFrame:
-    df = pl.read_parquet(HF_PARQUET_URL)
+    local_path = _download_with_cache(HF_PARQUET_URL)
+    df = pl.read_parquet(str(local_path))
 
     # Normalize/standardize column names, including 'stock' -> 'SYMBOL'
     rename_map = {}
@@ -71,12 +117,18 @@ def load_master_table_parquet() -> pl.DataFrame:
     if missing:
         raise ValueError(f"Parquet is missing required columns: {missing}")
 
+    # Normalize types
     df = df.with_columns([
         pl.col("SYMBOL").cast(pl.Utf8).str.strip().alias("SYMBOL"),
-        pl.col("DATE").str.strptime(pl.Datetime, strict=False, utc=False).cast(pl.Date),
+        pl.when(pl.col("DATE").dtype in (pl.Utf8, pl.Categorical))
+          .then(pl.col("DATE").str.strptime(pl.Datetime, strict=False, utc=False))
+          .otherwise(pl.col("DATE"))
+          .cast(pl.Date)
+          .alias("DATE"),
         pl.when(pl.col("Volume").is_null()).then(pl.lit(0)).otherwise(pl.col("Volume")).alias("Volume")
     ])
     df = df.filter(pl.col("SYMBOL").is_not_null() & (pl.col("SYMBOL") != ""))
+
     return df
 
 @st.cache_data(ttl=3600)
@@ -91,7 +143,7 @@ def list_all_symbols() -> List[str]:
 year = st.selectbox("Select Year", options=list(range(2019, datetime.now().year + 1))[::-1])
 
 # ======================
-# ⚡ YEARLY METRICS FROM PARQUET (Polars)
+# ⚡ YEARLY METRICS (Polars)
 # ======================
 @st.cache_data(ttl=3600)
 def fetch_yearly_data(symbols: List[str], year: int) -> tuple[pl.DataFrame, pl.DataFrame]:
@@ -122,8 +174,8 @@ def fetch_yearly_data(symbols: List[str], year: int) -> tuple[pl.DataFrame, pl.D
         .with_columns([
             ((pl.col("Close Price") - pl.col("Open Price")) / pl.col("Open Price") * 100.0).alias("% Change")
         ])
-        .select(["SYMBOL", "Open Price", "Close Price", "% Change", "Avg. Volume"])
         .with_columns(pl.col("% Change").round(2))
+        .select(["SYMBOL", "Open Price", "Close Price", "% Change", "Avg. Volume"])
         .sort(by="% Change", descending=True)
     )
 
@@ -133,7 +185,7 @@ def fetch_yearly_data(symbols: List[str], year: int) -> tuple[pl.DataFrame, pl.D
     return df_final, df_all
 
 # ======================
-# 🧮 AGE MAP (daily, calendar-safe) FROM PARQUET (Polars)
+# 🧮 AGE MAP (Polars, daily, calendar-safe)
 # ======================
 @st.cache_data(ttl=86400)
 def build_first_trade_map(
@@ -221,7 +273,6 @@ if all_symbols:
             df_final_pl, df_all_pl = fetch_yearly_data(all_symbols, year)
 
             if not df_final_pl.is_empty():
-                # Store as Polars to keep processing fast
                 st.session_state["fetched_data_pl"] = df_final_pl
                 st.session_state["fetched_all_pl"] = df_all_pl
                 st.session_state["fetched_year"] = year
@@ -239,12 +290,12 @@ if "fetched_data_pl" in st.session_state and st.session_state["fetched_data_pl"]
     df_result_pl = st.session_state["fetched_data_pl"]
     st.subheader(f"📊 Filter Results for {st.session_state['fetched_year']}")
 
-    # Compute bounds (Polars)
+    # Compute bounds (Polars -> Python)
     try:
-        open_min_bound = int(np.floor(df_result_pl.select(pl.col("Open Price").min()).item() / 10) * 10)
-        open_max_bound = int(np.ceil(df_result_pl.select(pl.col("Open Price").max()).item() / 10) * 10)
-        pct_min_bound = int(np.floor(df_result_pl.select(pl.col("% Change").min()).item() / 10) * 10)
-        pct_max_bound = int(np.ceil(df_result_pl.select(pl.col("% Change").max()).item() / 10) * 10)
+        open_min_bound = int(np.floor(df_result_pl.select(pl.min("Open Price")).item() / 10) * 10)
+        open_max_bound = int(np.ceil(df_result_pl.select(pl.max("Open Price")).item() / 10) * 10)
+        pct_min_bound = int(np.floor(df_result_pl.select(pl.min("% Change")).item() / 10) * 10)
+        pct_max_bound = int(np.ceil(df_result_pl.select(pl.max("% Change")).item() / 10) * 10)
     except Exception:
         open_min_bound, open_max_bound, pct_min_bound, pct_max_bound = 0, 1000, -100, 100
 
@@ -332,8 +383,7 @@ if "fetched_data_pl" in st.session_state and st.session_state["fetched_data_pl"]
         with st.spinner(f"Filtering companies {age_filter.lower()}..."):
             filtered_pl = filter_by_age_pl(filtered_pl, st.session_state["fetched_year"], age_option=age_filter)
 
-    # Prepare for display and download
-    # Add 1-based index via to_pandas for Streamlit ease
+    # Display and download
     filtered_pd = filtered_pl.to_pandas()
     filtered_pd = filtered_pd.reset_index(drop=True)
     filtered_pd.index = range(1, len(filtered_pd) + 1)
