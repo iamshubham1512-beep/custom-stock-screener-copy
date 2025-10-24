@@ -92,7 +92,7 @@ def load_master_table_parquet() -> pl.DataFrame:
     local_path = _download_with_cache(HF_PARQUET_URL)
     df = pl.read_parquet(str(local_path))
 
-    # 1) Normalize column names (accept 'stock' or 'symbol' as symbol)
+    # Normalize column names
     rename_map = {}
     for c in df.columns:
         cl = c.lower()
@@ -114,12 +114,8 @@ def load_master_table_parquet() -> pl.DataFrame:
     if missing:
         raise ValueError(f"Parquet is missing required columns: {missing}")
 
-    # 2) Make SYMBOL safely Utf8 then strip, without chaining .str on non-strings
-    #    First cast to Utf8 in one pass
-    df = df.with_columns(
-        pl.col("SYMBOL").cast(pl.Utf8).alias("SYMBOL")
-    )
-    #    Then strip in a guarded fashion (if null, keep null; else strip)
+    # SYMBOL: cast then strip safely (no chained .str on non-strings)
+    df = df.with_columns(pl.col("SYMBOL").cast(pl.Utf8).alias("SYMBOL"))
     df = df.with_columns(
         pl.when(pl.col("SYMBOL").is_not_null())
           .then(pl.col("SYMBOL").str.strip_chars())
@@ -127,21 +123,18 @@ def load_master_table_parquet() -> pl.DataFrame:
           .alias("SYMBOL")
     )
 
-    # 3) DATE: coerce various types robustly to Date
-    #    If DATE is Utf8/Categorical -> parse to Datetime then to Date; if already Date/Datetime, cast accordingly
-    date_col = pl.col("DATE")
-    df = df.with_columns(
-        pl.when(date_col.dtype == pl.Utf8)
-          .then(date_col.str.strptime(pl.Datetime, strict=False, utc=False).cast(pl.Date))
-          .when(date_col.dtype == pl.Categorical)
-          .then(date_col.cast(pl.Utf8).str.strptime(pl.Datetime, strict=False, utc=False).cast(pl.Date))
-          .when(date_col.dtype == pl.Datetime)
-          .then(date_col.cast(pl.Date))
-          .otherwise(date_col.cast(pl.Date))
-          .alias("DATE")
-    )
+    # DATE: coerce using concrete dtype from schema (avoid expr dtype comparisons)
+    date_dtype = df.schema.get("DATE")
+    if date_dtype == pl.Date:
+        df = df.with_columns(pl.col("DATE").cast(pl.Date).alias("DATE"))
+    elif date_dtype == pl.Datetime:
+        df = df.with_columns(pl.col("DATE").cast(pl.Date).alias("DATE"))
+    else:
+        df = df.with_columns(
+            pl.col("DATE").cast(pl.Utf8).str.strptime(pl.Datetime, strict=False, utc=False).cast(pl.Date).alias("DATE")
+        )
 
-    # 4) Volume: fill nulls with 0; ensure numeric
+    # Volume: ensure numeric and fill nulls
     if "Volume" in df.columns:
         df = df.with_columns(
             pl.when(pl.col("Volume").is_null()).then(pl.lit(0)).otherwise(pl.col("Volume")).alias("Volume")
@@ -149,7 +142,7 @@ def load_master_table_parquet() -> pl.DataFrame:
     else:
         df = df.with_columns(pl.lit(0).alias("Volume"))
 
-    # 5) Drop empty symbols
+    # Drop empty symbols
     df = df.filter(pl.col("SYMBOL").is_not_null() & (pl.col("SYMBOL") != ""))
 
     return df
@@ -284,6 +277,11 @@ with c1:
         st.cache_data.clear()
         st.cache_resource.clear()
         st.success("Cleared all caches. App will refresh.")
+
+# ======================
+# 📅 YEAR SELECTION + FETCH
+# ======================
+year = st.selectbox("Select Year", options=list(range(2019, datetime.now().year + 1))[::-1], key="year_select")
 
 # ======================
 # 🔍 FETCH BUTTON
