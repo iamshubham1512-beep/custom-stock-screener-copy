@@ -279,11 +279,6 @@ with c1:
         st.success("Cleared all caches. App will refresh.")
 
 # ======================
-# 📅 YEAR SELECTION + FETCH
-# ======================
-year = st.selectbox("Select Year", options=list(range(2019, datetime.now().year + 1))[::-1], key="year_select")
-
-# ======================
 # 🔍 FETCH BUTTON
 # ======================
 all_symbols = list_all_symbols()
