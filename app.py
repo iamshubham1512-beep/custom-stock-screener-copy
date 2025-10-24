@@ -1,9 +1,10 @@
 import streamlit as st
-import pandas as pd
-import yfinance as yf
+# Switch to Polars for speed
+import polars as pl
 from datetime import datetime
 import os
 import numpy as np
+from typing import Dict, List, Tuple
 
 # ======================
 # 🎯 APP CONFIGURATION
@@ -39,21 +40,27 @@ def file_mtime(path: str) -> float:
         return 0.0
 
 def ensure_ns(sym: str) -> str:
-    return sym if "." in sym else f"{sym}.NS"
+    # Keeping for compatibility with earlier code; dataset already uses NSE symbols
+    return sym
 
 def strip_indices(symbols):
     return [s for s in symbols if not str(s).startswith("^")]
 
 # ======================
-# 📂 LOAD STOCK SYMBOLS
+# 📂 LOAD STOCK SYMBOLS (from CSV list, unchanged)
 # ======================
 @st.cache_data
 def load_stock_list(file_path: str, file_mtime_key: float):
-    df = pd.read_csv(file_path)
+    # Read symbol list using Polars for consistency, return python list
+    df = pl.read_csv(file_path)
     if "SYMBOL" not in df.columns:
         raise ValueError("The file must contain a column named 'SYMBOL' (all caps).")
     syms = (
-        df["SYMBOL"].dropna().astype(str).str.strip().unique().tolist()
+        df.select(pl.col("SYMBOL").cast(pl.Utf8).str.strip())
+          .drop_nulls()
+          .unique()
+          .to_series()
+          .to_list()
     )
     return strip_indices(syms)
 
@@ -73,98 +80,117 @@ except Exception as e:
 year = st.selectbox("Select Year", options=list(range(2019, datetime.now().year + 1))[::-1])
 
 # ======================
-# ⚡ FETCH YEARLY DATA (BATCHED)
+# ⚡ DATA SOURCE: Hugging Face Parquet + Polars
+# ======================
+HF_PARQUET_URL = "https://huggingface.co/datasets/Chiron-S/NSE_Stocks_Data/resolve/main/All_Stocks_Master.parquet?download=true"
+
+@st.cache_data(ttl=3600)
+def load_master_table_parquet():
+    """
+    Load the full master table from the Parquet on Hugging Face using Polars.
+    Expected columns (typical for OHLCV): SYMBOL, DATE, Open, Close, Volume, etc.
+    DATE will be converted to date dtype; SYMBOL normalized to string.
+    """
+    # pl.read_parquet can stream over HTTP. If the hosting requires Range, Polars handles it for simple files.
+    df = pl.read_parquet(HF_PARQUET_URL)
+    # Normalize columns we use
+    cols = df.columns
+    # Try to standardize column names (case-insensitive handling)
+    rename_map = {}
+    for c in cols:
+        cl = c.lower()
+        if cl == "symbol":
+            rename_map[c] = "SYMBOL"
+        elif cl in ("date", "datetime", "timestamp"):
+            rename_map[c] = "DATE"
+        elif cl == "open":
+            rename_map[c] = "Open"
+        elif cl == "close":
+            rename_map[c] = "Close"
+        elif cl == "volume":
+            rename_map[c] = "Volume"
+    if rename_map:
+        df = df.rename(rename_map)
+
+    # Ensure minimal required columns exist
+    required = {"SYMBOL", "DATE", "Open", "Close"}
+    missing = required - set(df.columns)
+    if missing:
+        raise ValueError(f"Parquet is missing required columns: {missing}")
+
+    # Types
+    df = df.with_columns([
+        pl.col("SYMBOL").cast(pl.Utf8).str.strip(),
+        pl.col("DATE").str.strptime(pl.Datetime, strict=False, utc=False).cast(pl.Date)
+    ])
+
+    return df
+
+# ======================
+# ⚡ FETCH YEARLY DATA (from Parquet via Polars)
 # ======================
 @st.cache_data(ttl=3600)
-def fetch_yearly_data(symbols, year: int):
-    start_date = f"{year}-01-01"
-    end_date = f"{year}-12-31"
-    cache_folder = "cache"
-    os.makedirs(cache_folder, exist_ok=True)
-    cache_filename = os.path.join(cache_folder, f"Fetched_Symbols_{year}.csv")
+def fetch_yearly_data(symbols: List[str], year: int):
+    """
+    Compute yearly per-symbol metrics:
+    - Open Price: first available 'Open' of the year by DATE ascending
+    - Close Price: last available 'Close' of the year by DATE ascending
+    - % Change: ((Close_last - Open_first) / Open_first) * 100
+    - Avg. Volume: mean Volume over the year (0 if missing)
+    Keep only symbols that appear in the selected year; filter later by % Change > 0 like before.
+    """
+    master = load_master_table_parquet()
 
-    if os.path.exists(cache_filename):
-        try:
-            cached_df = pd.read_csv(cache_filename, index_col=0)
-            df_final = cached_df[cached_df["% Change"] > 0].sort_values(by="% Change", ascending=False)
-            df_final.index = range(1, len(df_final) + 1)
-            return df_final, cached_df
-        except Exception:
-            pass
+    # Filter to selected symbols and year range
+    start_date = datetime(year, 1, 1).date()
+    end_date = datetime(year, 12, 31).date()
 
-    tickers = [ensure_ns(s) for s in symbols]
-    data = yf.download(
-        tickers=tickers,
-        start=start_date,
-        end=end_date,
-        interval="1mo",
-        group_by="ticker",
-        auto_adjust=False,
-        progress=False,
-        threads=True,
+    df_year = (
+        master
+        .filter(pl.col("SYMBOL").is_in(symbols) & (pl.col("DATE") >= pl.lit(start_date)) & (pl.col("DATE") <= pl.lit(end_date)))
+        .select(["SYMBOL", "DATE", "Open", "Close", pl.col("Volume").fill_null(0).alias("Volume")])
     )
 
-    collected = []
-    for sym in symbols:
-        t = ensure_ns(sym)
-        if t not in getattr(data.columns, "levels", [data.columns])[0]:
-            continue
-        try:
-            df_t = data[t].dropna(how="all")
-        except Exception:
-            try:
-                df_t = data.xs(t, axis=1, level=0, drop_level=False).droplevel(0, axis=1).dropna(how="all")
-            except Exception:
-                continue
+    if df_year.is_empty():
+        # Return empty like the original
+        import pandas as pd
+        empty_df = pd.DataFrame(columns=["SYMBOL", "Open Price", "Close Price", "% Change", "Avg. Volume"])
+        return empty_df, empty_df
 
-        df_year = df_t[(df_t.index >= pd.Timestamp(start_date)) & (df_t.index <= pd.Timestamp(end_date))]
-        if df_year.empty or not set(["Open", "Close"]).issubset(df_year.columns):
-            continue
+    # Compute metrics per symbol using Polars expressions
+    # First open of the year and last close of the year
+    per_symbol = (
+        df_year
+        .sort(["SYMBOL", "DATE"])
+        .group_by("SYMBOL", maintain_order=True)
+        .agg([
+            pl.col("Open").first().alias("Open Price"),
+            pl.col("Close").last().alias("Close Price"),
+            pl.when(pl.col("Volume").len() > 0).then(pl.col("Volume").mean().cast(pl.Int64)).otherwise(pl.lit(0)).alias("Avg. Volume"),
+        ])
+        .with_columns([
+            ((pl.col("Close Price") - pl.col("Open Price")) / pl.col("Open Price") * 100.0).round(2).alias("% Change")
+        ])
+        .select(["SYMBOL", "Open Price", "Close Price", "% Change", "Avg. Volume"])
+        .sort(by="% Change", descending=True)
+    )
 
-        open_series = df_year["Open"].dropna()
-        close_series = df_year["Close"].dropna()
-        vol_series = df_year["Volume"].dropna() if "Volume" in df_year else pd.Series(dtype="float64")
-        if open_series.empty or close_series.empty:
-            continue
+    # Convert to pandas for compatibility with st.dataframe and CSV download
+    df_all_pd = per_symbol.to_pandas()
+    if not df_all_pd.empty:
+        df_all_pd.index = range(1, len(df_all_pd) + 1)
+        df_all_pd.index.name = "Sl. No."
 
-        open_price = float(open_series.iloc[0])
-        close_price = float(close_series.iloc[-1])
-        if open_price == 0:
-            continue
+    df_final_pd = df_all_pd[df_all_pd["% Change"] > 0].copy()
+    if not df_final_pd.empty:
+        df_final_pd.index = range(1, len(df_final_pd) + 1)
 
-        pct_change = round(((close_price - open_price) / open_price) * 100, 2)
-        avg_volume = int(vol_series.mean()) if not vol_series.empty else 0
-
-        collected.append({
-            "SYMBOL": sym,
-            "Open Price": round(open_price, 2),
-            "Close Price": round(close_price, 2),
-            "% Change": pct_change,
-            "Avg. Volume": avg_volume,
-        })
-
-    df_all = pd.DataFrame(collected).sort_values(by="% Change", ascending=False).reset_index(drop=True)
-    df_all.index += 1
-    df_all.index.name = "Sl. No."
-
-    df_final = df_all[df_all["% Change"] > 0].copy()
-    df_final.index = range(1, len(df_final) + 1)
-
-    if not df_all.empty:
-        try:
-            df_all.to_csv(cache_filename, index=True)
-        except Exception:
-            pass
-
-    return df_final, df_all
+    return df_final_pd, df_all_pd
 
 # ======================
-# 🧮 AGE MAP (BATCHED, FAST)
+# 🧮 AGE MAP (DAILY, calendar-safe) USING PARQUET
 # ======================
-from typing import Dict, List, Tuple
-
 def _normalize_symbol_list(symbols: List[str]) -> Tuple[str, ...]:
-    # Stable, hashable key for caching; upper-case and strip just in case
     return tuple(sorted(s.strip().upper() for s in symbols))
 
 @st.cache_data(ttl=86400)
@@ -173,76 +199,45 @@ def build_first_trade_map(
     selected_year: int,
     max_threshold_years: int = 5,
     force_refresh: bool = False
-) -> Dict[str, pd.Timestamp]:
+) -> Dict[str, datetime]:
     """
-    Returns a dict: SYMBOL -> first tradable daily bar date (UTC-naive Timestamp).
-    - Uses 1d bars for accuracy (first available open/close).
-    - Cache key is tied to (selected_year, symbols, max_threshold_years) to prevent stale reuse.
-    - Ensures lookback spans enough years to validate 'Older than N years' up to max_threshold_years.
+    SYMBOL -> first trading calendar date present in the Parquet (daily rows).
+    Uses daily DATE with valid Open/Close.
+    Cache key includes selected_year, symbol set, and horizon for correctness.
     """
-    # Cache key components that Streamlit uses (function args)
-    # 'force_refresh' doesn't get used in logic; it only helps bust cache when needed.
     _ = (selected_year, max_threshold_years, _normalize_symbol_list(symbols), force_refresh)
 
+    master = load_master_table_parquet()
     if not symbols:
         return {}
 
-    # Determine a lookback start so we can validate up to N years older than selected_year
-    # Example: selected_year=2022, N=3 -> need data <= 2019-12-31
     cutoff_year = selected_year - max_threshold_years
-    end = pd.Timestamp(year=selected_year, month=12, day=31)
-    start = pd.Timestamp(year=max(cutoff_year - 1, 1990), month=1, day=1)  # go one extra year to be safe
+    start = datetime(max(cutoff_year - 1, 1990), 1, 1).date()
+    end = datetime(selected_year, 12, 31).date()
 
-    tickers = [ensure_ns(s) for s in symbols]
-
-    hist = yf.download(
-        tickers=tickers,
-        start=start,
-        end=end + pd.Timedelta(days=1),  # inclusive end
-        interval="1d",
-        group_by="ticker",
-        auto_adjust=False,
-        progress=False,
-        threads=True,
+    df = (
+        master
+        .filter(
+            pl.col("SYMBOL").is_in(symbols) &
+            (pl.col("DATE") >= pl.lit(start)) &
+            (pl.col("DATE") <= pl.lit(end)) &
+            pl.col("Open").is_not_null() &
+            pl.col("Close").is_not_null()
+        )
+        .select(["SYMBOL", "DATE"])
+        .sort(["SYMBOL", "DATE"])
+        .group_by("SYMBOL", maintain_order=True)
+        .agg(pl.col("DATE").first().alias("FIRST_DATE"))
     )
 
-    first_trade: Dict[str, pd.Timestamp] = {}
-    # Multi-ticker returns MultiIndex columns [ticker -> fields]
-    for sym in symbols:
-        t = ensure_ns(sym)
-        try:
-            # try direct selection
-            if t in getattr(hist.columns, "levels", [hist.columns])[0]:
-                try:
-                    df_t = hist[t]
-                except Exception:
-                    df_t = hist.xs(t, axis=1, level=0, drop_level=False).droplevel(0, axis=1)
-            else:
-                continue
-
-            # Keep only rows that have valid open & close
-            cols = df_t.columns
-            if "Open" not in cols or "Close" not in cols:
-                continue
-            df_t = df_t.loc[df_t["Open"].notna() & df_t["Close"].notna()].copy()
-            if df_t.empty:
-                continue
-
-            # The earliest valid trading date
-            d0 = pd.Timestamp(df_t.index.min().date())
-            first_trade[sym] = d0
-        except Exception:
-            continue
-
+    # Convert to dict
+    first_trade = {}
+    if not df.is_empty():
+        for row in df.iter_rows(named=True):
+            first_trade[row["SYMBOL"]] = row["FIRST_DATE"]
     return first_trade
 
-def filter_by_age(df: pd.DataFrame, year: int, age_option: str) -> pd.DataFrame:
-    """
-    Robust age filter:
-    - For 'Older than N years' in year Y, requires first_trade_date <= Dec 31 of (Y - N).
-    - Uses daily history based first trade map.
-    - Excludes symbols with first trade inside the selected year when N >= 1.
-    """
+def filter_by_age(df, year: int, age_option: str):
     if age_option == "All" or df.empty:
         return df.copy()
 
@@ -255,31 +250,20 @@ def filter_by_age(df: pd.DataFrame, year: int, age_option: str) -> pd.DataFrame:
         return df.copy()
 
     N = threshold_map[age_option]
-    symbols = df["SYMBOL"].unique().tolist()
+    symbols_list = df["SYMBOL"].unique().tolist()
 
-    # Build an accurate first-trade map. We pick a max_threshold_years >= N to ensure sufficient lookback.
     first_trade_map = build_first_trade_map(
-        symbols=symbols,
+        symbols=symbols_list,
         selected_year=year,
         max_threshold_years=max(5, N + 1),
-        force_refresh=False  # set True to force recompute after big changes
+        force_refresh=False
     )
 
-    # Eligibility cutoff: on or before 31-Dec-(year-N)
-    cutoff = pd.Timestamp(year=year - N, month=12, day=31)
+    cutoff = datetime(year - N, 12, 31).date()
 
-    valid = []
-    for sym in symbols:
-        d0 = first_trade_map.get(sym)
-        # If we can't determine a date, be conservative: exclude it from "older than" buckets.
-        if d0 is None:
-            continue
-        # Must be listed/tradable on or before cutoff
-        if d0 <= cutoff:
-            valid.append(sym)
-
+    valid = [s for s in symbols_list if (s in first_trade_map and first_trade_map[s] <= cutoff)]
     return df[df["SYMBOL"].isin(valid)].copy()
-  
+
 # ======================
 # 🧹 CACHE CONTROL UI
 # ======================
@@ -315,7 +299,7 @@ if "fetched_data" in st.session_state and st.session_state["fetched_data"] is no
     df_result = st.session_state["fetched_data"]
     st.subheader(f"📊 Filter Results for {st.session_state['fetched_year']}")
 
-    # Compute bounds from the first list
+    # Compute bounds from the first list (use pandas DataFrame already)
     try:
         open_min_bound = int(np.floor(df_result["Open Price"].min() / 10) * 10)
         open_max_bound = int(np.ceil(df_result["Open Price"].max() / 10) * 10)
@@ -393,7 +377,7 @@ if "fetched_data" in st.session_state and st.session_state["fetched_data"] is no
         "All", "Older than 1 year", "Older than 2 years", "Older than 3 years"
     ], key="age_select")
 
-    # Apply filters
+    # Apply filters (df_result is pandas; keep logic unchanged)
     filtered_df = df_result[
         (df_result["Open Price"] >= open_range[0])
         & (df_result["Open Price"] <= open_range[1])
@@ -425,4 +409,4 @@ if "fetched_data" in st.session_state and st.session_state["fetched_data"] is no
 # ======================
 # 🧾 FOOTNOTE
 # ======================
-st.caption("Data Source: Yahoo Finance | Built by Shubham Kishor | Results cached for 1 hour.")
+st.caption("Data Source: Hugging Face Parquet (Chiron-S/NSE_Stocks_Data) | Built by Shubham Kishor | Results cached for 1 hour.")
