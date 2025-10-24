@@ -175,9 +175,17 @@ def fetch_yearly_data(symbols: List[str], year: int) -> tuple[pl.DataFrame, pl.D
     )
 
     if df_year.is_empty():
-        empty = pl.DataFrame(schema={"SYMBOL": pl.Utf8, "Open Price": pl.Float64, "Close Price": pl.Float64, "% Change": pl.Float64, "Avg. Volume": pl.Int64})
+        empty = pl.DataFrame(schema={
+            "SYMBOL": pl.Utf8,
+            "Open Price": pl.Float64,
+            "Close Price": pl.Float64,
+            "% Change": pl.Float64,
+            "Avg. Volume": pl.Int64,
+            "First Traded Date": pl.Date
+        })
         return empty, empty
 
+    # Compute per-symbol metrics for the selected year
     per_symbol = (
         df_year
         .sort(["SYMBOL", "DATE"])
@@ -192,9 +200,29 @@ def fetch_yearly_data(symbols: List[str], year: int) -> tuple[pl.DataFrame, pl.D
         ])
         .with_columns(pl.col("% Change").round(2))
         .select(["SYMBOL", "Open Price", "Close Price", "% Change", "Avg. Volume"])
+    )
+
+    # Build first-trade date from the full master table (daily rows)
+    first_trade = (
+        master
+        .filter(
+            pl.col("SYMBOL").is_in(symbols) &
+            pl.col("Open").is_not_null() &
+            pl.col("Close").is_not_null()
+        )
+        .select(["SYMBOL", "DATE"])
+        .sort(["SYMBOL", "DATE"])
+        .group_by("SYMBOL", maintain_order=True)
+        .agg(pl.col("DATE").first().alias("First Traded Date"))
+    )
+
+    # Join and sort
+    per_symbol = (
+        per_symbol.join(first_trade, on="SYMBOL", how="left")
         .sort(by="% Change", descending=True)
     )
 
+    # Apply positive filter as before
     df_all = per_symbol
     df_final = df_all.filter(pl.col("% Change") > 0)
 
