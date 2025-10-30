@@ -164,7 +164,7 @@ def fetch_yearly_data(symbols: List[str], year: int) -> Tuple[pl.DataFrame, pl.D
         return pl.DataFrame(), pl.DataFrame()
 
     yearly_data = (
-        df_year.group_by("Symbol")
+        df_year.group_by("symbol")
         .agg([
             pl.col("open").first().alias("Open Price"),
             pl.col("close").last().alias("Close Price"),
