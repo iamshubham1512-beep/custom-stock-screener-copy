@@ -89,21 +89,58 @@ year = st.selectbox("Select Year", options=list(range(2016, datetime.now().year 
 # 🧠 AGE MAP + FILTERS (Optimized)
 # ======================================================
 @st.cache_data(ttl=86400)
-def build_first_trade_lookup() -> Dict[str, datetime]:
+def build_first_trade_lookup() -> Dict[str, datetime.date]:
+    """
+    Returns a lookup mapping symbol -> first trade DATE (datetime.date) or None if missing.
+    """
     df = master_df.sort(["symbol", "date"]).group_by("symbol").agg(pl.col("date").first().alias("FIRST_DATE"))
-    return {r["symbol"]: r["FIRST_DATE"] for r in df.iter_rows(named=True)}
+
+    lookup: Dict[str, datetime.date] = {}
+    for r in df.iter_rows(named=True):
+        sym = r["symbol"]
+        first_dt = r["FIRST_DATE"]
+        if first_dt is None:
+            lookup[sym] = None
+            continue
+
+        # `first_dt` is usually a datetime.datetime from polars; convert to date()
+        try:
+            lookup[sym] = first_dt.date() if hasattr(first_dt, "date") else first_dt
+        except Exception:
+            # fallback: set None so it won't be treated as 'old'
+            lookup[sym] = None
+
+    return lookup
+
 
 def filter_by_age_pl(df_pl: pl.DataFrame, year: int, age_option: str) -> pl.DataFrame:
+    """
+    Filters df_pl to only include symbols whose first trade date is <= cutoff.
+    Safe against missing lookup entries.
+    """
     if df_pl.is_empty() or age_option == "All":
         return df_pl
 
     lookup = build_first_trade_lookup()
     threshold_map = {"Older than 1 year": 1, "Older than 2 years": 2, "Older than 3 years": 3}
-
     N = threshold_map.get(age_option, 0)
     cutoff = datetime(year - N, 12, 31).date()
 
-    valid_symbols = [s for s in df_pl["symbol"].to_list() if lookup.get(s, datetime.now().date()) <= cutoff]
+    symbols_in_df = df_pl.select(pl.col("symbol")).to_series().to_list()
+    valid_symbols = []
+    for s in symbols_in_df:
+        first_date = lookup.get(s)
+        # if we don't have a first date, skip the symbol (treat as 'too new' / unknown)
+        if first_date is None:
+            continue
+        # first_date and cutoff are both datetime.date objects, safe to compare
+        if first_date <= cutoff:
+            valid_symbols.append(s)
+
+    # if none valid, return empty dataframe with same schema
+    if not valid_symbols:
+        return df_pl.filter(pl.lit(False))
+
     return df_pl.filter(pl.col("symbol").is_in(valid_symbols))
 
 # ======================================================
