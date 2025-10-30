@@ -44,19 +44,13 @@ def load_parquet_from_hf(url: str) -> pl.DataFrame:
         df = pl.read_parquet(data)
 
         # Normalize columns
-        expected_cols = ['date', 'symbol', 'open', 'high', 'low', 'close', 'volume']
         df.columns = [c.lower() for c in df.columns]
 
-        # Fix date if needed
+        # Simplified date parsing
         if df['date'].dtype != pl.Datetime:
-            df = df.with_columns([
-                pl.when(pl.col('date').str.contains('-'))
-                .then(pl.col('date').str.strptime(pl.Datetime, "%Y-%m-%d %H:%M:%S", strict=False))
-                .otherwise(pl.col('date').str.strptime(pl.Datetime, "%d/%m/%Y %H:%M", strict=False))
-                .alias('date')
-            ])
+            df = df.with_columns(pl.col("date").str.to_datetime(strict=False))
 
-        # Clean and add year
+        # Add year column
         df = df.drop_nulls(['date', 'open', 'close']).with_columns(
             pl.col('date').dt.year().alias('year')
         )
@@ -76,10 +70,15 @@ def load_master_table_parquet() -> pl.DataFrame:
         df = df1 if not df1.is_empty() else df2
     return df
 
+# Load master data once and reuse
+if "master_df" not in st.session_state:
+    st.session_state["master_df"] = load_master_table_parquet()
+
+master_df = st.session_state["master_df"]
+
 @st.cache_data(ttl=3600)
 def list_all_symbols() -> List[str]:
-    master = load_master_table_parquet()
-    return sorted(master.select(pl.col("symbol").unique()).to_series().to_list())
+    return sorted(master_df.select(pl.col("symbol").unique()).to_series().to_list())
 
 # ======================================================
 # 📅 YEAR SELECTION
@@ -87,53 +86,25 @@ def list_all_symbols() -> List[str]:
 year = st.selectbox("Select Year", options=list(range(2016, datetime.now().year + 1))[::-1])
 
 # ======================================================
-# 🧠 AGE MAP + FILTERS
+# 🧠 AGE MAP + FILTERS (Optimized)
 # ======================================================
-def strip_indices(symbols: List[str]) -> List[str]:
-    return [s for s in symbols if not str(s).startswith("^")]
-
-def _normalize_symbol_list(symbols: List[str]) -> Tuple[str, ...]:
-    return tuple(sorted(str(s).strip().upper() for s in symbols if s is not None))
-
 @st.cache_data(ttl=86400)
-def build_first_trade_map(symbols: List[str], selected_year: int, max_threshold_years: int = 5) -> Dict[str, datetime]:
-    master = load_master_table_parquet()
-    if not symbols:
-        return {}
-
-    cutoff_year = selected_year - max_threshold_years
-    start = datetime(max(cutoff_year - 1, 1990), 1, 1).date()
-    end = datetime(selected_year, 12, 31).date()
-
-    df = (
-        master
-        .filter(
-            pl.col("symbol").is_in(symbols) &
-            (pl.col("date") >= start) & (pl.col("date") <= end) &
-            pl.col("open").is_not_null() & pl.col("close").is_not_null()
-        )
-        .select(["symbol", "date"])
-        .sort(["symbol", "date"])
-        .group_by("symbol", maintain_order=True)
-        .agg(pl.col("date").first().alias("FIRST_DATE"))
-    )
-
+def build_first_trade_lookup() -> Dict[str, datetime]:
+    df = master_df.sort(["symbol", "date"]).group_by("symbol").agg(pl.col("date").first().alias("FIRST_DATE"))
     return {r["symbol"]: r["FIRST_DATE"] for r in df.iter_rows(named=True)}
 
 def filter_by_age_pl(df_pl: pl.DataFrame, year: int, age_option: str) -> pl.DataFrame:
     if df_pl.is_empty() or age_option == "All":
         return df_pl
 
+    lookup = build_first_trade_lookup()
     threshold_map = {"Older than 1 year": 1, "Older than 2 years": 2, "Older than 3 years": 3}
-    if age_option not in threshold_map:
-        return df_pl
 
-    N = threshold_map[age_option]
-    symbols_list = df_pl.select(pl.col("symbol").unique()).to_series().to_list()
-    first_trade_map = build_first_trade_map(symbols_list, year, max(5, N + 1))
+    N = threshold_map.get(age_option, 0)
     cutoff = datetime(year - N, 12, 31).date()
-    valid = {s for s, d in first_trade_map.items() if d <= cutoff}
-    return df_pl.filter(pl.col("symbol").is_in(list(valid)))
+
+    valid_symbols = [s for s in df_pl["symbol"].to_list() if lookup.get(s, datetime.now().date()) <= cutoff]
+    return df_pl.filter(pl.col("symbol").is_in(valid_symbols))
 
 # ======================================================
 # 🧹 CACHE CLEAR BUTTON
@@ -150,8 +121,7 @@ with c1:
 # ======================================================
 @st.cache_data(ttl=3600)
 def fetch_yearly_data(symbols: List[str], year: int) -> Tuple[pl.DataFrame, pl.DataFrame]:
-    master = load_master_table_parquet()
-    df_year = master.filter(pl.col("year") == year)
+    df_year = master_df.filter(pl.col("year") == year)
 
     if df_year.is_empty():
         return pl.DataFrame(), pl.DataFrame()
@@ -238,6 +208,10 @@ if "fetched_data_pl" in st.session_state and st.session_state["fetched_data_pl"]
         with st.spinner(f"Filtering companies {age_filter.lower()}..."):
             filtered_pl = filter_by_age_pl(filtered_pl, st.session_state["fetched_year"], age_filter)
 
+    # 🧩 Optional Top N selector
+    top_n = st.slider("Show Top N Gainers", 10, 500, 100)
+    filtered_pl = filtered_pl.head(top_n)
+
     # Display & download
     filtered_pd = filtered_pl.to_pandas().reset_index(drop=True)
     filtered_pd.index = range(1, len(filtered_pd) + 1)
@@ -254,4 +228,7 @@ if "fetched_data_pl" in st.session_state and st.session_state["fetched_data_pl"]
 # ======================================================
 # 🧾 FOOTNOTE
 # ======================================================
-st.caption("Data Source: Hugging Face Parquet (2016–2020 & 2021–2024) | Built by Shubham Kishor | Cached for 1 hour.")
+st.caption(
+    f"Data Source: Hugging Face Parquet (2016–2020 & 2021–2024) | "
+    f"Built by Shubham Kishor | Cached for 1 hour | Cache last refreshed: {datetime.now().strftime('%d %b %Y, %I:%M %p')}"
+)
