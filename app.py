@@ -252,6 +252,8 @@ if "fetched_data_pl" in st.session_state and st.session_state["fetched_data_pl"]
 # ======================================================
 # 📋 DISPLAY (Fixed Sl. No. in same table) + DOWNLOAD
 # ======================================================
+st.write(f"📈 Showing {len(sorted_df)} results after filters:")
+
 if "filtered_pl" in locals() and filtered_pl is not None and not filtered_pl.is_empty():
     filtered_pd = filtered_pl.to_pandas().reset_index(drop=True)
 
@@ -290,8 +292,6 @@ if "filtered_pl" in locals() and filtered_pl is not None and not filtered_pl.is_
     sorted_df["Sl. No."] = sorted_df.reset_index().apply(
         lambda x: filtered_pd["_sl_index"].iloc[x["index"]], axis=1
     )
-
-    st.write(f"📈 Showing {len(sorted_df)} results after filters:")
 
     # Download button
     csv = sorted_df.to_csv(index=False).encode("utf-8")
