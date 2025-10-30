@@ -269,3 +269,117 @@ st.caption(
     f"Data Source: Hugging Face Parquet (2016–2020 & 2021–2024) | "
     f"Built by Shubham Kishor | Cached for 1 hour | Cache last refreshed: {dt.datetime.now().strftime('%d %b %Y, %I:%M %p')}"
 )
+
+import streamlit as st
+
+# =====================
+# PAGE CONFIG
+# =====================
+st.set_page_config(
+    page_title="Modern Dashboard",
+    page_icon="💎",
+    layout="wide",
+)
+
+# =====================
+# CUSTOM CSS
+# =====================
+st.markdown("""
+    <style>
+    /* 🌈 Global App Style */
+    .stApp {
+        background: linear-gradient(135deg, #1e1e2f, #2b2b4b);
+        color: white;
+        font-family: 'Poppins', sans-serif;
+    }
+
+    /* Hide Streamlit default footer & menu */
+    #MainMenu {visibility: hidden;}
+    footer {visibility: hidden;}
+    header {visibility: hidden;}
+
+    /* 💎 Glassmorphism Cards */
+    .glass-card {
+        background: rgba(255, 255, 255, 0.1);
+        border-radius: 20px;
+        padding: 30px;
+        box-shadow: 0 4px 30px rgba(0, 0, 0, 0.3);
+        backdrop-filter: blur(10px);
+        -webkit-backdrop-filter: blur(10px);
+        border: 1px solid rgba(255, 255, 255, 0.2);
+    }
+
+    /* 🌙 Button Style */
+    div.stButton > button:first-child {
+        background: linear-gradient(90deg, #6a11cb, #2575fc);
+        color: white;
+        border: none;
+        padding: 0.6rem 1.5rem;
+        border-radius: 12px;
+        font-weight: 600;
+        transition: all 0.3s ease;
+    }
+    div.stButton > button:hover {
+        transform: translateY(-2px);
+        box-shadow: 0px 5px 15px rgba(0,0,0,0.3);
+    }
+
+    /* 📊 Metric style override */
+    [data-testid="stMetricValue"] {
+        font-size: 2rem;
+        font-weight: 700;
+    }
+    [data-testid="stMetricLabel"] {
+        color: #d1d1d1;
+    }
+
+    /* 🧭 Sidebar style */
+    section[data-testid="stSidebar"] {
+        background: rgba(255, 255, 255, 0.08);
+        backdrop-filter: blur(12px);
+        border-right: 1px solid rgba(255, 255, 255, 0.2);
+    }
+
+    /* ✨ Title styling */
+    h1, h2, h3 {
+        font-weight: 600;
+        background: linear-gradient(90deg, #9f44d3, #4e9af1);
+        -webkit-background-clip: text;
+        -webkit-text-fill-color: transparent;
+    }
+    </style>
+""", unsafe_allow_html=True)
+
+# =====================
+# SIDEBAR
+# =====================
+st.sidebar.title("⚙️ Controls")
+st.sidebar.slider("Opacity", 0.1, 1.0, 0.5)
+st.sidebar.button("Refresh Data")
+
+# =====================
+# MAIN DASHBOARD
+# =====================
+st.title("💎 Modern Streamlit Dashboard")
+st.write("A fully restyled example using glassmorphism + gradients.")
+
+col1, col2, col3 = st.columns(3)
+with col1:
+    st.markdown('<div class="glass-card">', unsafe_allow_html=True)
+    st.metric("Revenue", "₹12.3L", "+5.6%")
+    st.markdown("</div>", unsafe_allow_html=True)
+
+with col2:
+    st.markdown('<div class="glass-card">', unsafe_allow_html=True)
+    st.metric("Users", "8,230", "+12%")
+    st.markdown("</div>", unsafe_allow_html=True)
+
+with col3:
+    st.markdown('<div class="glass-card">', unsafe_allow_html=True)
+    st.metric("Engagement", "76%", "-2.3%")
+    st.markdown("</div>", unsafe_allow_html=True)
+
+st.markdown("## Activity Overview")
+st.markdown('<div class="glass-card">', unsafe_allow_html=True)
+st.line_chart({"Visitors": [50, 120, 90, 150, 300, 400, 500]})
+st.markdown("</div>", unsafe_allow_html=True)
