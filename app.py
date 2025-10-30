@@ -29,18 +29,20 @@ def load_data_from_hf(url: str) -> pl.DataFrame:
         parquet_bytes = io.BytesIO(response.content)
         df = pl.read_parquet(parquet_bytes)
 
-        # Clean and prepare columns
+        # --- Ensure 'date' column exists ---
         if "date" not in df.columns:
             raise ValueError("Missing 'date' column in dataset")
 
-        # Handle both date formats (auto-detect)
-        df = df.with_columns([
-            pl.when(pl.col("date").str.contains("-"))
-              .then(pl.col("date").str.strptime(pl.Datetime, format="%Y-%m-%d %H:%M:%S", strict=False))
-              .otherwise(pl.col("date").str.strptime(pl.Datetime, format="%d/%m/%Y %H:%M", strict=False))
-              .alias("date")
-        ])
+        # --- Handle mixed formats ---
+        if df["date"].dtype != pl.Datetime:
+            df = df.with_columns([
+                pl.when(pl.col("date").str.contains("-"))
+                  .then(pl.col("date").str.strptime(pl.Datetime, format="%Y-%m-%d %H:%M:%S", strict=False))
+                  .otherwise(pl.col("date").str.strptime(pl.Datetime, format="%d/%m/%Y %H:%M", strict=False))
+                  .alias("date")
+            ])
 
+        # --- Drop nulls & add year column ---
         df = df.drop_nulls(["date", "open", "close"])
         df = df.with_columns(pl.col("date").dt.year().alias("year"))
         return df
