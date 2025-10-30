@@ -7,7 +7,7 @@ import requests
 # ======================================================
 # ⚙️ CONFIGURATION
 # ======================================================
-HUGGINGFACE_BASE_URL = "https://huggingface.co/datasets/YOUR_USERNAME/YOUR_DATASET_NAME/resolve/main"
+HUGGINGFACE_BASE_URL = "https://huggingface.co/datasets/Chiron-S/NSE_Stocks_Data/tree/main"
 PARQUET_FILES = [
     "NSE_Stocks_2016_2020.parquet",
     "NSE_Stocks_2021_2024.parquet"
