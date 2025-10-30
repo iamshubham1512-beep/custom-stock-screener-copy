@@ -245,10 +245,6 @@ if "fetched_data_pl" in st.session_state and st.session_state["fetched_data_pl"]
         with st.spinner(f"Filtering companies {age_filter.lower()}..."):
             filtered_pl = filter_by_age_pl(filtered_pl, st.session_state["fetched_year"], age_filter)
 
-    # 🧩 Optional Top N selector
-    top_n = st.slider("Show Top N Gainers", 10, 500, 100)
-    filtered_pl = filtered_pl.head(top_n)
-
     # Display & download
     filtered_pd = filtered_pl.to_pandas().reset_index(drop=True)
     filtered_pd.index = range(1, len(filtered_pd) + 1)
