@@ -249,18 +249,34 @@ if "fetched_data_pl" in st.session_state and st.session_state["fetched_data_pl"]
         with st.spinner(f"Filtering companies {age_filter.lower()}..."):
             filtered_pl = filter_by_age_pl(filtered_pl, st.session_state["fetched_year"], age_filter)
 
-    # Display & download
-    filtered_pd = filtered_pl.to_pandas().reset_index(drop=True)
-    filtered_pd.insert(0, "Sl. No.", range(1, len(filtered_pd) + 1))  # Fixed serial numbering
-    st.write(f"📈 Showing {len(filtered_pd)} results after filters:")
+# ======================================================
+# 📋 DISPLAY (Fixed Sl. No.) + DOWNLOAD
+# ======================================================
+filtered_pd = filtered_pl.to_pandas().reset_index(drop=True)
+filtered_pd.insert(0, "Sl. No.", range(1, len(filtered_pd) + 1))
 
-    # Disable reindexing during sorting
-    st.dataframe(filtered_pd, use_container_width=True, hide_index=True)
+st.write(f"📈 Showing {len(filtered_pd)} results after filters:")
 
-    csv = filtered_pd.to_csv(index=False).encode("utf-8")
-    st.download_button("⬇️ Download Filtered CSV", csv,
-                       file_name=f"Filtered_Gainers_{st.session_state['fetched_year']}.csv",
-                       mime="text/csv")
+# Use st.data_editor to keep Sl. No. fixed while allowing sorting
+st.data_editor(
+    filtered_pd,
+    use_container_width=True,
+    hide_index=True,
+    disabled=True,  # read-only
+    column_config={
+        "Sl. No.": st.column_config.Column("Sl. No.", width="small", disabled=True),
+    },
+    key="data_table_editor"
+)
+
+# Download filtered data
+csv = filtered_pd.to_csv(index=False).encode("utf-8")
+st.download_button(
+    "⬇️ Download Filtered CSV",
+    csv,
+    file_name=f"Filtered_Gainers_{st.session_state['fetched_year']}.csv",
+    mime="text/csv"
+)
 
 # ======================================================
 # 🧾 FOOTNOTE
