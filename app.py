@@ -102,6 +102,99 @@ try:
     st.success(f"✅ Data processed successfully for {year}")
     st.metric(label="Total Stocks", value=gainers.height)
 
+# ======================
+# 🎛️ REAL-TIME FILTERS
+# ======================
+if "fetched_data_pl" in st.session_state and st.session_state["fetched_data_pl"] is not None:
+    df_result_pl = st.session_state["fetched_data_pl"]
+    st.subheader(f"📊 Filter Results for {st.session_state['fetched_year']}")
+
+    # Compute bounds (Polars -> Python scalars)
+    try:
+        open_min_bound = int(np.floor(df_result_pl.select(pl.min("Open Price")).item() / 10) * 10)
+        open_max_bound = int(np.ceil(df_result_pl.select(pl.max("Open Price")).item() / 10) * 10)
+        pct_min_bound = int(np.floor(df_result_pl.select(pl.min("% Change")).item() / 10) * 10)
+        pct_max_bound = int(np.ceil(df_result_pl.select(pl.max("% Change")).item() / 10) * 10)
+    except Exception:
+        open_min_bound, open_max_bound, pct_min_bound, pct_max_bound = 0, 1000, -100, 100
+
+    # Immutable initial labels
+    if "open_min_init" not in st.session_state or st.session_state.get("init_year") != st.session_state["fetched_year"]:
+        st.session_state.open_min_init = open_min_bound
+        st.session_state.open_max_init = open_max_bound
+        st.session_state.pct_min_init = pct_min_bound
+        st.session_state.pct_max_init = pct_max_bound
+        st.session_state.init_year = st.session_state["fetched_year"]
+
+    # Editable inputs
+    if "open_min_val" not in st.session_state or st.session_state.get("inputs_year") != st.session_state["fetched_year"]:
+        st.session_state.open_min_val = open_min_bound
+        st.session_state.open_max_val = open_max_bound
+        st.session_state.pct_min_val = pct_min_bound
+        st.session_state.pct_max_val = pct_max_bound
+        st.session_state.inputs_year = st.session_state["fetched_year"]
+
+    # Open Price inputs
+    st.markdown(
+        f"#### Open Price Range (₹) — Min ({st.session_state.open_min_init}) · Max ({st.session_state.open_max_init})"
+    )
+    cmin, cmax = st.columns(2)
+    with cmin:
+        st.session_state.open_min_val = st.number_input(
+            "Min", min_value=open_min_bound, max_value=open_max_bound,
+            value=max(open_min_bound, min(st.session_state.open_min_val, st.session_state.open_max_val)),
+            step=1, key="open_min_input"
+        )
+    with cmax:
+        st.session_state.open_max_val = st.number_input(
+            "Max", min_value=open_min_bound, max_value=open_max_bound,
+            value=min(open_max_bound, max(st.session_state.open_max_val, st.session_state.open_min_val)),
+            step=1, key="open_max_input"
+        )
+    st.session_state.open_min_val = max(open_min_bound, min(st.session_state.open_min_val, st.session_state.open_max_val))
+    st.session_state.open_max_val = min(open_max_bound, max(st.session_state.open_max_val, st.session_state.open_min_val))
+    open_range = (st.session_state.open_min_val, st.session_state.open_max_val)
+
+    # % Change inputs
+    st.markdown(
+        f"#### % Change Range — Min ({st.session_state.pct_min_init}) · Max ({st.session_state.pct_max_init})"
+    )
+    cpmin, cpmax = st.columns(2)
+    with cpmin:
+        st.session_state.pct_min_val = st.number_input(
+            "Min", min_value=pct_min_bound, max_value=pct_max_bound,
+            value=max(pct_min_bound, min(st.session_state.pct_min_val, st.session_state.pct_max_val)),
+            step=1, key="pct_min_input"
+        )
+    with cpmax:
+        st.session_state.pct_max_val = st.number_input(
+            "Max", min_value=pct_min_bound, max_value=pct_max_bound,
+            value=min(pct_max_bound, max(st.session_state.pct_max_val, st.session_state.pct_min_val)),
+            step=1, key="pct_max_input"
+        )
+    st.session_state.pct_min_val = max(pct_min_bound, min(st.session_state.pct_min_val, st.session_state.pct_max_val))
+    st.session_state.pct_max_val = min(pct_max_bound, max(st.session_state.pct_max_val, st.session_state.pct_min_val))
+    pct_range = (st.session_state.pct_min_val, st.session_state.pct_max_val)
+
+    # Apply filters in Polars
+    filtered_pl = df_result_pl.filter(
+        (pl.col("Open Price") >= open_range[0]) &
+        (pl.col("Open Price") <= open_range[1]) &
+        (pl.col("% Change") >= pct_range[0]) &
+        (pl.col("% Change") <= pct_range[1])
+    )
+
+    # Vol filter
+    vol_filter = st.selectbox("Filter by Avg. Volume", options=[
+        "All", "More than 100K", "More than 150K", "More than 200K",
+        "More than 250K", "More than 300K", "More than 350K",
+        "More than 400K", "More than 500K"
+    ], key="vol_select")
+    if vol_filter != "All":
+        vol_threshold = int(vol_filter.split(" ")[-1].replace("K", "000"))
+        filtered_pl = filtered_pl.filter(pl.col("Avg. Volume") > vol_threshold)
+
+    
     # ==========================================
     # 📋 DISPLAY RESULTS
     # ==========================================
