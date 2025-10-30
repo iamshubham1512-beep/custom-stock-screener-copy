@@ -83,7 +83,8 @@ def list_all_symbols() -> List[str]:
 # ======================================================
 # 📅 YEAR SELECTION
 # ======================================================
-year = st.selectbox("Select Year", options=list(range(2016, datetime.now().year + 1))[::-1])
+year = st.selectbox("Select Year", options=list(range(2016, dt.datetime.now().year + 1))[::-1])
+
 
 # ======================================================
 # 🧠 AGE MAP + FILTERS (Optimized)
