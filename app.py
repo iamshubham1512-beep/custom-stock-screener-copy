@@ -1,7 +1,7 @@
 import streamlit as st
 import polars as pl
 import requests, io
-from datetime import datetime
+import datetime as dt
 import numpy as np
 from typing import List, Dict, Tuple
 
@@ -89,7 +89,7 @@ year = st.selectbox("Select Year", options=list(range(2016, datetime.now().year 
 # 🧠 AGE MAP + FILTERS (Optimized)
 # ======================================================
 @st.cache_data(ttl=86400)
-def build_first_trade_lookup() -> Dict[str, datetime.date]:
+def build_first_trade_lookup() -> Dict[str, dt.date]:
     """
     Build a lookup table mapping each symbol to its first trade date (as datetime.date).
     Handles mixed date/datetime/numpy types safely.
@@ -100,7 +100,7 @@ def build_first_trade_lookup() -> Dict[str, datetime.date]:
         .agg(pl.col("date").first().alias("FIRST_DATE"))
     )
 
-    lookup: Dict[str, datetime.date] = {}
+    lookup: Dict[str, dt.date] = {}
     for r in df.iter_rows(named=True):
         sym = r["symbol"]
         first_dt = r["FIRST_DATE"]
@@ -110,13 +110,13 @@ def build_first_trade_lookup() -> Dict[str, datetime.date]:
             continue
 
         # Handle various possible date types
-        if isinstance(first_dt, datetime):
+        if isinstance(first_dt, dt.datetime):
             lookup[sym] = first_dt.date()
         elif hasattr(first_dt, "item"):  # numpy datetime64
-            lookup[sym] = datetime.utcfromtimestamp(first_dt.item() / 1e9).date()
+            lookup[sym] = dt.datetime.utcfromtimestamp(first_dt.item() / 1e9).date()
         else:
             try:
-                lookup[sym] = datetime.strptime(str(first_dt), "%Y-%m-%d").date()
+                lookup[sym] = dt.datetime.strptime(str(first_dt), "%Y-%m-%d").date()
             except Exception:
                 lookup[sym] = None
 
@@ -134,12 +134,12 @@ def filter_by_age_pl(df_pl: pl.DataFrame, year: int, age_option: str) -> pl.Data
     year_cut_map = {"Older than 1 year": 1, "Older than 2 years": 2, "Older than 3 years": 3}
     N = year_cut_map.get(age_option, 0)
 
-    cutoff = datetime(year - N, 12, 31).date()
+    cutoff = dt.date(year - N, 12, 31)
     valid_symbols = []
 
     for s in df_pl["symbol"].to_list():
         first_date = lookup.get(s)
-        if first_date and isinstance(first_date, datetime.date) and first_date <= cutoff:
+        if first_date and isinstance(first_date, dt.date) and first_date <= cutoff:
             valid_symbols.append(s)
 
     if not valid_symbols:
