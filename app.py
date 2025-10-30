@@ -252,37 +252,41 @@ if "fetched_data_pl" in st.session_state and st.session_state["fetched_data_pl"]
 # ======================================================
 # 📋 DISPLAY (True Fixed Sl. No.) + DOWNLOAD
 # ======================================================
-filtered_pd = filtered_pl.to_pandas().reset_index(drop=True)
-filtered_pd["Sl. No."] = range(1, len(filtered_pd) + 1)
+if "filtered_pl" in locals() and filtered_pl is not None and not filtered_pl.is_empty():
+    filtered_pd = filtered_pl.to_pandas().reset_index(drop=True)
+    filtered_pd["Sl. No."] = range(1, len(filtered_pd) + 1)
 
-st.write(f"📈 Showing {len(filtered_pd)} results after filters:")
+    st.write(f"📈 Showing {len(filtered_pd)} results after filters:")
 
-# Separate static serial numbers and sortable data
-col1, col2 = st.columns([0.1, 0.9])
+    # Create 2 columns (for fixed serial number + sortable table)
+    col1, col2 = st.columns([0.1, 0.9])
 
-with col1:
-    st.write("### Sl. No.")
-    st.dataframe(
-        filtered_pd[["Sl. No."]],
-        hide_index=True,
-        use_container_width=True
+    with col1:
+        st.write("### Sl. No.")
+        st.dataframe(
+            filtered_pd[["Sl. No."]],
+            hide_index=True,
+            use_container_width=True
+        )
+
+    with col2:
+        st.dataframe(
+            filtered_pd.drop(columns=["Sl. No."]),
+            use_container_width=True,
+            hide_index=True
+        )
+
+    # Download filtered data
+    csv = filtered_pd.to_csv(index=False).encode("utf-8")
+    st.download_button(
+        "⬇️ Download Filtered CSV",
+        csv,
+        file_name=f"Filtered_Gainers_{st.session_state['fetched_year']}.csv",
+        mime="text/csv"
     )
 
-with col2:
-    st.dataframe(
-        filtered_pd.drop(columns=["Sl. No."]),
-        use_container_width=True,
-        hide_index=True
-    )
-
-# Download filtered data
-csv = filtered_pd.to_csv(index=False).encode("utf-8")
-st.download_button(
-    "⬇️ Download Filtered CSV",
-    csv,
-    file_name=f"Filtered_Gainers_{st.session_state['fetched_year']}.csv",
-    mime="text/csv"
-)
+else:
+    st.warning("⚠️ No data available yet. Please apply filters or fetch data first.")
 
 
 # ======================================================
