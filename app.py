@@ -250,34 +250,51 @@ if "fetched_data_pl" in st.session_state and st.session_state["fetched_data_pl"]
             filtered_pl = filter_by_age_pl(filtered_pl, st.session_state["fetched_year"], age_filter)
 
 # ======================================================
-# 📋 DISPLAY (True Fixed Sl. No.) + DOWNLOAD
+# 📋 DISPLAY (Fixed Sl. No. in same table) + DOWNLOAD
 # ======================================================
 if "filtered_pl" in locals() and filtered_pl is not None and not filtered_pl.is_empty():
     filtered_pd = filtered_pl.to_pandas().reset_index(drop=True)
-    filtered_pd["Sl. No."] = range(1, len(filtered_pd) + 1)
 
-    st.write(f"📈 Showing {len(filtered_pd)} results after filters:")
+    # Assign Sl. No. once (before any display)
+    filtered_pd.insert(0, "Sl. No.", range(1, len(filtered_pd) + 1))
 
-    # Create 2 columns (for fixed serial number + sortable table)
-    col1, col2 = st.columns([0.1, 0.9])
+    # Rename columns as required
+    filtered_pd.rename(columns={
+        "symbol": "Symbol",
+        "% Change": "% Change",
+        "Avg. Volume": "Avg. Volume"
+    }, inplace=True)
 
-    with col1:
-        st.write("### Sl. No.")
-        st.dataframe(
-            filtered_pd[["Sl. No."]],
-            hide_index=True,
-            use_container_width=True
-        )
+    # Reorder columns so % Change appears before Avg. Volume
+    cols = list(filtered_pd.columns)
+    if "% Change" in cols and "Avg. Volume" in cols:
+        cols.remove("% Change")
+        cols.remove("Avg. Volume")
+        insert_pos = cols.index("Avg. Open") + 1 if "Avg. Open" in cols else len(cols)
+        cols.insert(insert_pos, "% Change")
+        cols.insert(insert_pos + 1, "Avg. Volume")
+        filtered_pd = filtered_pd[cols]
 
-    with col2:
-        st.dataframe(
-            filtered_pd.drop(columns=["Sl. No."]),
-            use_container_width=True,
-            hide_index=True
-        )
+    # Cache original Sl. No. to restore order after Streamlit sorting
+    filtered_pd["_sl_index"] = filtered_pd["Sl. No."]
 
-    # Download filtered data
-    csv = filtered_pd.to_csv(index=False).encode("utf-8")
+    # Display interactive table
+    sorted_df = st.data_editor(
+        filtered_pd.drop(columns=["_sl_index"]),
+        hide_index=True,
+        use_container_width=True,
+        key="sorted_table",
+    )
+
+    # Re-align Sl. No. using cached index (so serial numbers stay fixed)
+    sorted_df["Sl. No."] = sorted_df.reset_index().apply(
+        lambda x: filtered_pd["_sl_index"].iloc[x["index"]], axis=1
+    )
+
+    st.write(f"📈 Showing {len(sorted_df)} results after filters:")
+
+    # Download button
+    csv = sorted_df.to_csv(index=False).encode("utf-8")
     st.download_button(
         "⬇️ Download Filtered CSV",
         csv,
@@ -287,6 +304,7 @@ if "filtered_pl" in locals() and filtered_pl is not None and not filtered_pl.is_
 
 else:
     st.warning("⚠️ No data available yet. Please apply filters or fetch data first.")
+
 
 
 # ======================================================
