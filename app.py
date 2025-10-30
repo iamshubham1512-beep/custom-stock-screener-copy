@@ -87,7 +87,7 @@ def load_master_table_parquet(year: int) -> pl.DataFrame:
         return pl.DataFrame()
 
     # Normalize columns
-    expected_cols = ["date/time", "symbol", "open", "high", "low", "close", "volume"]
+    expected_cols = ["date", "symbol", "open", "high", "low", "close", "volume"]
     df_cols = [c.lower().strip() for c in df.columns]
     rename_map = dict(zip(df.columns, df_cols))
     df = df.rename(rename_map)
@@ -98,7 +98,6 @@ def load_master_table_parquet(year: int) -> pl.DataFrame:
         return pl.DataFrame()
 
     # Cleanup & normalization
-    df = df.rename({"date/time": "date"})
     df = df.with_columns([
         pl.col("date").str.strptime(pl.Datetime, "%Y-%m-%d", strict=False).dt.date().alias("date"),
         pl.col("symbol").str.strip_chars().alias("symbol")
