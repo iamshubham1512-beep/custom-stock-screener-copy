@@ -28,15 +28,21 @@ def load_data_from_hf(url: str) -> pl.DataFrame:
         response.raise_for_status()
         parquet_bytes = io.BytesIO(response.content)
         df = pl.read_parquet(parquet_bytes)
-        
-        # Clean and prepare
-        df = df.with_columns([
-            pl.col("date").str.strptime(pl.Datetime, fmt="%Y-%m-%d %H:%M:%S", strict=False).alias("date")
-        ]).drop_nulls(["date", "open", "close"])
 
+        # Clean and prepare columns
+        if "date" not in df.columns:
+            raise ValueError("Missing 'date' column in dataset")
+
+        # Handle both date formats (auto-detect)
         df = df.with_columns([
-            pl.col("date").dt.year().alias("year")
+            pl.when(pl.col("date").str.contains("-"))
+              .then(pl.col("date").str.strptime(pl.Datetime, format="%Y-%m-%d %H:%M:%S", strict=False))
+              .otherwise(pl.col("date").str.strptime(pl.Datetime, format="%d/%m/%Y %H:%M", strict=False))
+              .alias("date")
         ])
+
+        df = df.drop_nulls(["date", "open", "close"])
+        df = df.with_columns(pl.col("date").dt.year().alias("year"))
         return df
 
     except Exception as e:
@@ -84,7 +90,9 @@ try:
             pl.col("volume").mean().round(0).alias("Avg. Volume")
         ])
         .with_columns([
-            ((pl.col("Close") - pl.col("Open")) / pl.col("Open") * 100).alias("% Change").round(2)
+            ((pl.col("Close") - pl.col("Open")) / pl.col("Open") * 100)
+            .alias("% Change")
+            .round(2)
         ])
         .sort("% Change", descending=True)
     )
@@ -95,11 +103,7 @@ try:
     # ==========================================
     # 📋 DISPLAY RESULTS
     # ==========================================
-    st.dataframe(
-        gainers.to_pandas(),
-        use_container_width=True,
-        height=700
-    )
+    st.dataframe(gainers.to_pandas(), use_container_width=True, height=700)
 
     # ==========================================
     # 📥 DOWNLOAD OPTION
