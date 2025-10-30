@@ -1,187 +1,147 @@
-import os
-import time
-import requests
-import tempfile
-from pathlib import Path
-from datetime import datetime
-import polars as pl
 import streamlit as st
+import polars as pl
+from datetime import datetime
 import numpy as np
+from typing import Dict, List, Tuple
+import requests
+import hashlib
+import time
+from pathlib import Path
 
-# ======================================================
-# ⚙️ Streamlit Config
-# ======================================================
-st.set_page_config(page_title="📊 NSE Yearly Stock Screener", layout="wide")
+# ======================
+# 🎯 APP CONFIGURATION
+# ======================
+st.set_page_config(page_title="📈 Yearly Stock Screener", layout="wide")
+st.title("📊 Yearly Top Gainers (NSE)")
+st.write("Select a year to view top-performing NSE stocks based on yearly price change and average volume.")
 
-st.title("📈 NSE Stocks Yearly Screener (2016–2024)")
-st.caption("Data powered by Hugging Face | Cached locally for speed 🚀")
+# ======================
+# 💄 UI TWEAKS
+# ======================
+st.markdown("""
+<style>
+button.step-up { display: none !important; }
+button.step-down { display: none !important; }
+input[type=number]::-webkit-outer-spin-button,
+input[type=number]::-webkit-inner-spin-button {
+  -webkit-appearance: none;
+  margin: 0;
+}
+input[type=number] {
+  -moz-appearance: textfield;
+}
+</style>
+""", unsafe_allow_html=True)
 
-CACHE_DIR = Path("cache")
+# ======================
+# ⚙️ HELPERS
+# ======================
+def strip_indices(symbols: List[str]) -> List[str]:
+    return [s for s in symbols if not str(s).startswith("^")]
+
+def _normalize_symbol_list(symbols: List[str]) -> Tuple[str, ...]:
+    return tuple(sorted(str(s).strip().upper() for s in symbols if s is not None))
+
+# ======================
+# 📦 DATA SOURCES (Hugging Face + Local Cache)
+# ======================
+PARQUET_URLS = {
+    "2016_2020": "https://huggingface.co/datasets/Chiron-S/NSE_Stocks_Data/resolve/main/NSE_Stocks_2016_2020.parquet",
+    "2021_2024": "https://huggingface.co/datasets/Chiron-S/NSE_Stocks_Data/resolve/main/NSE_Stocks_2021_2024.parquet"
+}
+CACHE_DIR = Path(".hf_cache")
 CACHE_DIR.mkdir(exist_ok=True)
 
-# ======================================================
-# 🧱 Hugging Face Parquet File URLs
-# ======================================================
-HF_FILES = {
-    "2016_2020": "https://huggingface.co/datasets/your-hf-username/your-repo/resolve/main/NSE_Stocks_2016_2020.parquet",
-    "2021_2024": "https://huggingface.co/datasets/your-hf-username/your-repo/resolve/main/NSE_Stocks_2021_2024.parquet",
-}
+# ======================
+# ⚡ SMART DOWNLOAD + LOCAL CACHE
+# ======================
+def _download_with_cache(url: str, cache_dir: Path = CACHE_DIR, max_retries: int = 3, timeout: int = 60) -> Path:
+    digest = hashlib.sha256(url.encode("utf-8")).hexdigest()[:16]
+    data_path = cache_dir / f"{digest}.parquet"
+    etag_path = cache_dir / f"{digest}.etag"
+    headers = {}
 
-# ======================================================
-# 🧩 Download with Cache + ETag Validation
-# ======================================================
-def _download_with_cache(url: str, max_retries: int = 3, timeout: int = 15) -> Path:
-    filename = Path(url.split("/")[-1])
-    local_path = CACHE_DIR / filename
-    etag_path = local_path.with_suffix(".etag")
+    if etag_path.exists():
+        etag = etag_path.read_text().strip()
+        if etag:
+            headers["If-None-Match"] = etag
 
-    try:
-        head = requests.head(url, timeout=timeout)
-        etag = head.headers.get("ETag")
-    except Exception:
-        etag = None
-
-    if local_path.exists() and etag_path.exists():
-        cached = etag_path.read_text().strip()
-        if etag == cached:
-            return local_path
-
-    for attempt in range(max_retries):
+    session = requests.Session()
+    for attempt in range(1, max_retries + 1):
         try:
-            with requests.get(url, stream=True, timeout=timeout) as r:
-                r.raise_for_status()
-                with tempfile.NamedTemporaryFile(delete=False) as tmp:
-                    for chunk in r.iter_content(chunk_size=8192):
-                        tmp.write(chunk)
-                    tmp_path = Path(tmp.name)
-            tmp_path.replace(local_path)
+            resp = session.get(url, headers=headers, stream=True, timeout=timeout)
+            if resp.status_code == 304 and data_path.exists():
+                return data_path
+            resp.raise_for_status()
+            etag = resp.headers.get("ETag")
             if etag:
                 etag_path.write_text(etag)
-            return local_path
+
+            tmp_path = data_path.with_suffix(".tmp")
+            with open(tmp_path, "wb") as f:
+                for chunk in resp.iter_content(chunk_size=1024 * 1024):
+                    if chunk:
+                        f.write(chunk)
+            tmp_path.replace(data_path)
+            return data_path
         except Exception as e:
-            if attempt < max_retries - 1:
-                time.sleep(2)
-            else:
-                raise RuntimeError(f"❌ Failed to download {url}: {e}")
+            if attempt == max_retries:
+                if data_path.exists():
+                    return data_path
+                raise RuntimeError(f"Download failed after {max_retries} attempts: {e}")
+            time.sleep(1.5 * attempt)
 
-# ======================================================
-# 🧠 Load & Merge Both Parquet Datasets
-# ======================================================
-@st.cache_data(show_spinner=True)
-def load_master_table() -> pl.DataFrame:
-    local_files = [_download_with_cache(u) for u in HF_FILES.values()]
+# ======================
+# 🧠 DATA LOADER
+# ======================
+@st.cache_data(ttl=3600)
+def load_master_table_parquet() -> pl.DataFrame:
     dfs = []
-
-    for file in local_files:
+    for key, url in PARQUET_URLS.items():
         try:
-            lf = pl.scan_parquet(str(file))
-            cols_present = lf.columns
-            required_cols = ["SYMBOL", "DATE", "Open", "High", "Low", "Close", "Volume"]
-
-            for col in required_cols:
-                if col not in cols_present:
-                    lf = lf.with_columns(pl.lit(None).alias(col))
-
-            df = (
-                lf.with_columns([
-                    pl.col("SYMBOL").cast(pl.Utf8, strict=False).str.strip_chars().alias("SYMBOL"),
-                    pl.col("DATE").str.strip_chars().str.strptime(pl.Date, fmt=None, strict=False).alias("DATE"),
-                    pl.col("Open").cast(pl.Float64, strict=False),
-                    pl.col("High").cast(pl.Float64, strict=False),
-                    pl.col("Low").cast(pl.Float64, strict=False),
-                    pl.col("Close").cast(pl.Float64, strict=False),
-                    pl.col("Volume").fill_null(0).cast(pl.Int64, strict=False),
-                ])
-                .filter(pl.col("SYMBOL").is_not_null())
-                .collect(streaming=True)
-            )
+            local_path = _download_with_cache(url)
+            df = pl.read_parquet(str(local_path))
             dfs.append(df)
         except Exception as e:
-            st.warning(f"⚠️ Skipped {file.name} due to: {e}")
+            st.warning(f"⚠️ Failed to load {key}: {e}")
 
     if not dfs:
-        st.error("❌ No valid data files found.")
-        return pl.DataFrame()
+        st.error("No data loaded from Hugging Face. Please check URLs or internet connection.")
+        st.stop()
 
-    combined = pl.concat(dfs, how="vertical_relaxed").unique(subset=["SYMBOL", "DATE"])
-    return combined
+    df = pl.concat(dfs, how="vertical_relaxed")
 
-# ======================================================
-# 🔤 Helper — List All Symbols
-# ======================================================
-@st.cache_data(show_spinner=False)
-def list_all_symbols() -> list[str]:
-    df = load_master_table()
-    return sorted(df["SYMBOL"].unique().to_list())
+    # Normalize columns
+    rename_map = {}
+    for c in df.columns:
+        cl = c.lower()
+        if cl in ("symbol", "stock"):
+            rename_map[c] = "SYMBOL"
+        elif cl in ("date", "datetime", "timestamp"):
+            rename_map[c] = "DATE"
+        elif cl == "open":
+            rename_map[c] = "Open"
+        elif cl == "close":
+            rename_map[c] = "Close"
+        elif cl == "volume":
+            rename_map[c] = "Volume"
+    if rename_map:
+        df = df.rename(rename_map)
 
-# ======================================================
-# 🧮 Compute Yearly Stats
-# ======================================================
-@st.cache_data(show_spinner=True)
-def fetch_yearly_data(year: int) -> pl.DataFrame:
-    df = load_master_table()
-    df = df.filter(pl.col("DATE").dt.year() == year)
+    # Ensure mandatory columns
+    required = {"SYMBOL", "DATE", "Open", "Close"}
+    missing = required - set(df.columns)
+    if missing:
+        raise ValueError(f"Missing required columns: {missing}")
 
-    if df.is_empty():
-        st.warning(f"No data found for year {year}.")
-        return pl.DataFrame()
+    # Clean columns
+    df = df.with_columns([
+        pl.col("SYMBOL").cast(pl.Utf8).str.strip_chars().alias("SYMBOL"),
+        pl.col("DATE").cast(pl.Utf8).str.strptime(pl.Date, strict=False, exact=False).alias("DATE"),
+        pl.col("Open").cast(pl.Float64),
+        pl.col("Close").cast(pl.Float64),
+        pl.col("Volume").cast(pl.Int64).fill_null(0)
+    ])
 
-    yearly_stats = (
-        df.group_by("SYMBOL")
-        .agg([
-            pl.first("Open").alias("Open"),
-            pl.last("Close").alias("Close"),
-            (pl.last("Close") - pl.first("Open")).alias("Change"),
-            ((pl.last("Close") - pl.first("Open")) / pl.first("Open") * 100).alias("PctChange"),
-            pl.mean("Volume").alias("AvgVolume"),
-            (pl.col("DATE").max() - pl.col("DATE").min()).alias("DaysActive"),
-        ])
-        .sort("PctChange", descending=True)
-    )
-
-    return yearly_stats
-
-# ======================================================
-# 🎛️ Sidebar Controls
-# ======================================================
-st.sidebar.header("⚙️ Filters")
-
-selected_year = st.sidebar.selectbox("Select Year", list(range(2016, 2025))[::-1])
-min_price, max_price = st.sidebar.slider("Price Range", 0.0, 5000.0, (0.0, 5000.0))
-min_pct, max_pct = st.sidebar.slider("Change % Range", -100.0, 100.0, (-100.0, 100.0))
-min_vol = st.sidebar.number_input("Min Avg Volume", 0, 10_000_000, 0)
-min_days = st.sidebar.number_input("Min Days Active", 0, 365, 30)
-
-if st.sidebar.button("🔁 Clear Cache"):
-    st.cache_data.clear()
-    st.success("Cache cleared successfully.")
-
-# ======================================================
-# 📊 Display Yearly Data
-# ======================================================
-with st.spinner(f"Fetching {selected_year} data..."):
-    df = fetch_yearly_data(selected_year)
-
-if not df.is_empty():
-    filtered = df.filter(
-        (pl.col("Open") >= min_price)
-        & (pl.col("Close") <= max_price)
-        & (pl.col("PctChange") >= min_pct)
-        & (pl.col("PctChange") <= max_pct)
-        & (pl.col("AvgVolume") >= min_vol)
-        & (pl.col("DaysActive") >= min_days)
-    )
-
-    pd_df = filtered.to_pandas()
-    st.subheader(f"📈 Filtered Stocks — {selected_year}")
-    st.dataframe(pd_df, use_container_width=True)
-
-    # Top 10 chart
-    top10 = pd_df.nlargest(10, "PctChange")
-    if not top10.empty:
-        import plotly.express as px
-        fig = px.bar(top10, x="SYMBOL", y="PctChange", title="Top 10 Gainers", text="PctChange")
-        fig.update_traces(texttemplate="%{text:.2f}%", textposition="outside")
-        st.plotly_chart(fig, use_container_width=True)
-else:
-    st.info("No data available for selected filters.")
+    # Drop blanks
+    df = df.filter(pl.col("SYMBOL").is_not_null() &
