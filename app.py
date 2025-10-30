@@ -43,14 +43,11 @@ def load_parquet_from_hf(url: str) -> pl.DataFrame:
         data = io.BytesIO(response.content)
         df = pl.read_parquet(data)
 
-        # Normalize columns
         df.columns = [c.lower() for c in df.columns]
 
-        # Simplified date parsing
         if df['date'].dtype != pl.Datetime:
             df = df.with_columns(pl.col("date").str.to_datetime(strict=False))
 
-        # Add year column
         df = df.drop_nulls(['date', 'open', 'close']).with_columns(
             pl.col('date').dt.year().alias('year')
         )
@@ -70,7 +67,6 @@ def load_master_table_parquet() -> pl.DataFrame:
         df = df1 if not df1.is_empty() else df2
     return df
 
-# Load master data once and reuse
 if "master_df" not in st.session_state:
     st.session_state["master_df"] = load_master_table_parquet()
 
@@ -85,16 +81,11 @@ def list_all_symbols() -> List[str]:
 # ======================================================
 year = st.selectbox("Select Year", options=list(range(2016, dt.datetime.now().year + 1))[::-1])
 
-
 # ======================================================
-# 🧠 AGE MAP + FILTERS (Optimized)
+# 🧠 AGE MAP + FILTERS
 # ======================================================
 @st.cache_data(ttl=86400)
 def build_first_trade_lookup() -> Dict[str, dt.date]:
-    """
-    Build a lookup table mapping each symbol to its first trade date (as datetime.date).
-    Handles mixed date/datetime/numpy types safely.
-    """
     df = (
         master_df.sort(["symbol", "date"])
         .group_by("symbol")
@@ -110,10 +101,9 @@ def build_first_trade_lookup() -> Dict[str, dt.date]:
             lookup[sym] = None
             continue
 
-        # Handle various possible date types
         if isinstance(first_dt, dt.datetime):
             lookup[sym] = first_dt.date()
-        elif hasattr(first_dt, "item"):  # numpy datetime64
+        elif hasattr(first_dt, "item"):
             lookup[sym] = dt.datetime.utcfromtimestamp(first_dt.item() / 1e9).date()
         else:
             try:
@@ -125,9 +115,6 @@ def build_first_trade_lookup() -> Dict[str, dt.date]:
 
 
 def filter_by_age_pl(df_pl: pl.DataFrame, year: int, age_option: str) -> pl.DataFrame:
-    """
-    Filter symbols by how long they've been listed (based on first trade date).
-    """
     if df_pl.is_empty() or age_option == "All":
         return df_pl
 
@@ -138,7 +125,7 @@ def filter_by_age_pl(df_pl: pl.DataFrame, year: int, age_option: str) -> pl.Data
     cutoff = dt.date(year - N, 12, 31)
     valid_symbols = []
 
-    for s in df_pl["symbol"].to_list():
+    for s in df_pl["Symbol"].to_list():
         first_date = lookup.get(s)
         if first_date and isinstance(first_date, dt.date) and first_date <= cutoff:
             valid_symbols.append(s)
@@ -146,7 +133,7 @@ def filter_by_age_pl(df_pl: pl.DataFrame, year: int, age_option: str) -> pl.Data
     if not valid_symbols:
         return df_pl.filter(pl.lit(False))
 
-    return df_pl.filter(pl.col("symbol").is_in(valid_symbols))
+    return df_pl.filter(pl.col("Symbol").is_in(valid_symbols))
 
 # ======================================================
 # 🧹 CACHE CLEAR BUTTON
@@ -180,6 +167,8 @@ def fetch_yearly_data(symbols: List[str], year: int) -> Tuple[pl.DataFrame, pl.D
             .round(2)
             .alias("% Change")
         ])
+        .rename({"symbol": "Symbol"})
+        .select(["Symbol", "Open Price", "Close Price", "% Change", "Avg. Volume"])
         .sort("% Change", descending=True)
     )
 
@@ -215,17 +204,27 @@ if "fetched_data_pl" in st.session_state and st.session_state["fetched_data_pl"]
 
     # Range bounds
     try:
-        open_min_bound = int(np.floor(df_result_pl.select(pl.min("Open Price")).item() / 10) * 10)
-        open_max_bound = int(np.ceil(df_result_pl.select(pl.max("Open Price")).item() / 10) * 10)
+        open_min_val = df_result_pl.select(pl.min("Open Price")).item()
+        open_max_val = df_result_pl.select(pl.max("Open Price")).item()
         pct_min_bound = int(np.floor(df_result_pl.select(pl.min("% Change")).item() / 10) * 10)
         pct_max_bound = int(np.ceil(df_result_pl.select(pl.max("% Change")).item() / 10) * 10)
     except Exception:
-        open_min_bound, open_max_bound, pct_min_bound, pct_max_bound = 0, 1000, -100, 100
+        open_min_val, open_max_val, pct_min_bound, pct_max_bound = 0, 1000, -100, 100
 
-    # Open & % Change filters
+    # Dynamic labels showing values
     cmin, cmax = st.columns(2)
-    st.session_state.open_min_val = cmin.number_input("Min Open", min_value=open_min_bound, max_value=open_max_bound, value=open_min_bound)
-    st.session_state.open_max_val = cmax.number_input("Max Open", min_value=open_min_bound, max_value=open_max_bound, value=open_max_bound)
+    st.session_state.open_min_val = cmin.number_input(
+        f"Min Open (₹{open_min_val:.2f})", 
+        min_value=int(np.floor(open_min_val / 10) * 10),
+        max_value=int(np.ceil(open_max_val / 10) * 10),
+        value=int(np.floor(open_min_val / 10) * 10)
+    )
+    st.session_state.open_max_val = cmax.number_input(
+        f"Max Open (₹{open_max_val:.2f})", 
+        min_value=int(np.floor(open_min_val / 10) * 10),
+        max_value=int(np.ceil(open_max_val / 10) * 10),
+        value=int(np.ceil(open_max_val / 10) * 10)
+    )
 
     cpmin, cpmax = st.columns(2)
     st.session_state.pct_min_val = cpmin.number_input("Min % Change", min_value=pct_min_bound, max_value=pct_max_bound, value=pct_min_bound)
@@ -252,13 +251,13 @@ if "fetched_data_pl" in st.session_state and st.session_state["fetched_data_pl"]
 
     # Display & download
     filtered_pd = filtered_pl.to_pandas().reset_index(drop=True)
-    filtered_pd.index = range(1, len(filtered_pd) + 1)
-    filtered_pd.index.name = "Sl. No."
-
+    filtered_pd.insert(0, "Sl. No.", range(1, len(filtered_pd) + 1))  # Fixed serial numbering
     st.write(f"📈 Showing {len(filtered_pd)} results after filters:")
-    st.dataframe(filtered_pd, use_container_width=True)
 
-    csv = filtered_pd.to_csv(index=True).encode("utf-8")
+    # Disable reindexing during sorting
+    st.dataframe(filtered_pd, use_container_width=True, hide_index=True)
+
+    csv = filtered_pd.to_csv(index=False).encode("utf-8")
     st.download_button("⬇️ Download Filtered CSV", csv,
                        file_name=f"Filtered_Gainers_{st.session_state['fetched_year']}.csv",
                        mime="text/csv")
@@ -269,5 +268,4 @@ if "fetched_data_pl" in st.session_state and st.session_state["fetched_data_pl"]
 st.caption(
     f"Data Source: Hugging Face Parquet (2016–2020 & 2021–2024) | "
     f"Built by Shubham Kishor | Cached for 1 hour | Cache last refreshed: {dt.datetime.now().strftime('%d %b %Y, %I:%M %p')}"
-
 )
