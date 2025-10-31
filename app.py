@@ -339,6 +339,3 @@ st.caption(
     f"Data Source: Hugging Face Parquet (2016–2020 & 2021–2024) | "
     f"Built by Shubham Kishor | Cached for 1 hour | Cache last refreshed: {dt.datetime.now().strftime('%d %b %Y, %I:%M %p')}"
 )
-
-
-Fix save filtered data function only, rest script should be untouched
