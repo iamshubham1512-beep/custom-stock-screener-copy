@@ -195,6 +195,65 @@ if all_symbols:
 else:
     st.stop()
 
+
+import json
+from pathlib import Path
+
+SAVE_DIR = Path("saved_filters")
+SAVE_DIR.mkdir(exist_ok=True)
+
+# ======================================================
+# 💾 SAVE & LOAD FILTERED DATA FEATURE
+# ======================================================
+def save_filtered_data(df, filters, year):
+    """Save filtered dataframe with filter metadata."""
+    timestamp = dt.datetime.now().strftime("%Y%m%d_%H%M%S")
+    filename = f"{year}_{timestamp}.parquet"
+    meta_filename = f"{year}_{timestamp}.json"
+
+    # Save data
+    df.write_parquet(SAVE_DIR / filename)
+
+    # Save metadata
+    with open(SAVE_DIR / meta_filename, "w") as f:
+        json.dump({
+            "year": year,
+            "filters": filters,
+            "saved_on": dt.datetime.now().strftime("%d %b %Y, %I:%M %p")
+        }, f, indent=4)
+
+    st.success(f"✅ Filtered data saved as **{filename}**")
+
+def load_saved_data():
+    """Return list of saved datasets."""
+    files = sorted(SAVE_DIR.glob("*.parquet"), reverse=True)
+    return files
+
+# ------------------------------------------------------
+# 🎛️ Sidebar controls for Save / Load
+# ------------------------------------------------------
+st.sidebar.markdown("### 💾 Saved Filters")
+
+if "filtered_pl" in locals() and filtered_pl is not None and not filtered_pl.is_empty():
+    if st.sidebar.button("💾 Save Current Filtered Data"):
+        active_filters = {
+            "age_filter": age_filter,
+            "selected_year": st.session_state.get("fetched_year"),
+            "other_filters": st.session_state.get("active_filters", {})
+        }
+        save_filtered_data(filtered_pl, active_filters, st.session_state["fetched_year"])
+
+# Load section
+saved_files = load_saved_data()
+if saved_files:
+    selected_file = st.sidebar.selectbox("📂 Load Saved Data", saved_files)
+    if st.sidebar.button("🔄 Load Selected File"):
+        filtered_pl = pl.read_parquet(selected_file)
+        st.session_state["loaded_file"] = selected_file.name
+        st.success(f"✅ Loaded saved filtered data: {selected_file.name}")
+else:
+    st.sidebar.info("No saved filters found yet.")
+
 # ======================================================
 # 🎛️ FILTERS + DISPLAY
 # ======================================================
