@@ -202,16 +202,22 @@ from pathlib import Path
 SAVE_DIR = Path("saved_filters")
 SAVE_DIR.mkdir(exist_ok=True)
 
+import json
+from pathlib import Path
+
 # ======================================================
 # 💾 SAVE & LOAD FILTERED DATA FEATURE
 # ======================================================
+SAVE_DIR = Path("saved_filters")
+SAVE_DIR.mkdir(exist_ok=True)
+
 def save_filtered_data(df, filters, year):
-    """Save filtered dataframe with filter metadata."""
+    """Save filtered dataframe with metadata."""
     timestamp = dt.datetime.now().strftime("%Y%m%d_%H%M%S")
     filename = f"{year}_{timestamp}.parquet"
     meta_filename = f"{year}_{timestamp}.json"
 
-    # Save data
+    # Save filtered Polars dataframe
     df.write_parquet(SAVE_DIR / filename)
 
     # Save metadata
@@ -222,37 +228,42 @@ def save_filtered_data(df, filters, year):
             "saved_on": dt.datetime.now().strftime("%d %b %Y, %I:%M %p")
         }, f, indent=4)
 
-    st.success(f"✅ Filtered data saved as **{filename}**")
+    st.sidebar.success(f"✅ Saved filtered data as `{filename}`")
 
 def load_saved_data():
-    """Return list of saved datasets."""
+    """List saved parquet files (sorted newest first)."""
     files = sorted(SAVE_DIR.glob("*.parquet"), reverse=True)
     return files
 
-# ------------------------------------------------------
-# 🎛️ Sidebar controls for Save / Load
-# ------------------------------------------------------
+
+# ======================================================
+# 🎛️ SIDEBAR CONTROLS FOR SAVE / LOAD
+# ======================================================
 st.sidebar.markdown("### 💾 Saved Filters")
 
-if "filtered_pl" in locals() and filtered_pl is not None and not filtered_pl.is_empty():
-    if st.sidebar.button("💾 Save Current Filtered Data"):
-        active_filters = {
-            "age_filter": age_filter,
-            "selected_year": st.session_state.get("fetched_year"),
-            "other_filters": st.session_state.get("active_filters", {})
-        }
-        save_filtered_data(filtered_pl, active_filters, st.session_state["fetched_year"])
-
-# Load section
+# LOAD SECTION (always visible)
 saved_files = load_saved_data()
 if saved_files:
-    selected_file = st.sidebar.selectbox("📂 Load Saved Data", saved_files)
+    selected_file = st.sidebar.selectbox("📂 Load Saved Data", saved_files, format_func=lambda x: x.name)
     if st.sidebar.button("🔄 Load Selected File"):
         filtered_pl = pl.read_parquet(selected_file)
         st.session_state["loaded_file"] = selected_file.name
-        st.success(f"✅ Loaded saved filtered data: {selected_file.name}")
+        st.sidebar.success(f"✅ Loaded saved file: `{selected_file.name}`")
 else:
-    st.sidebar.info("No saved filters found yet.")
+    st.sidebar.info("No saved filters yet.")
+
+# SAVE BUTTON (visible only if filtered_pl exists and not empty)
+if "filtered_pl" in locals() and filtered_pl is not None and not filtered_pl.is_empty():
+    with st.sidebar.expander("💾 Save Current Data", expanded=True):
+        if st.button("💾 Save Current Filtered Data"):
+            active_filters = {
+                "year": st.session_state.get("fetched_year"),
+                "age_filter": age_filter,
+                "other_filters": st.session_state.get("active_filters", {})
+            }
+            save_filtered_data(filtered_pl, active_filters, st.session_state["fetched_year"])
+else:
+    st.sidebar.caption("⚙️ Save option appears after applying filters.")
 
 # ======================================================
 # 🎛️ FILTERS + DISPLAY
